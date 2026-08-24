@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+logs/
+device_dump.json
+dashboard-preview.png
+preview.png
+config.yaml
+.venv/

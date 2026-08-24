@@ -1,0 +1,5 @@
+hidapi
+Pillow
+psutil
+pyyaml
+pytest
