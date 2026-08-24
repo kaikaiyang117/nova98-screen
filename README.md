@@ -19,29 +19,54 @@ pip install -r requirements.txt
 ## 使用
 
 ```bash
-python -m nova98.cli devices   # 列出 NOVA98 HID 接口
-python -m nova98.cli metrics   # 打印当前系统指标
-python -m nova98.cli preview   # 生成 preview.png 预览图
-python -m nova98.cli show      # 手动上传一次 Dashboard 到屏幕
-python -m nova98.cli run       # 后台自动刷新（默认最短间隔 30 秒）
+python -m nova98.cli devices         # 列出 NOVA98 HID 接口
+python -m nova98.cli metrics         # 打印当前系统指标
+python -m nova98.cli telemetry       # 打印原生遥测通道将发送的值
+python -m nova98.cli preview         # 生成 preview.png 预览图
+python -m nova98.cli show            # 手动上传一次静态帧到屏幕
+python -m nova98.cli telemetry-test  # 单次发送 cmd 52 测试（--dry-run 可只编码）
+python -m nova98.cli run             # 双通道后台运行（遥测 1Hz + 静态 30s）
 ```
 
 配置文件 `config.yaml`（模板见 `layouts/system.yaml`）：刷新间隔、指标开关、
 变化阈值。
 
-## 架构
+## 架构（双通道）
 
 ```text
-MetricsService (psutil, 1s 采样)
-      ↓ SystemMetrics
-ChangeDetector + RefreshLimiter (≥30s)
-      ↓
-Renderer (PIL 240×135)
-      ↓
-RGB565 Encoder → FrameBuffer (256B 头 + 64800B 像素)
-      ↓
-Nova98Hid uploader (AA 50 分块 ×16，每块等 55 41 ACK)
+                    System
+
+                      │
+
+                MetricsService (1s)
+
+                      │
+             ┌────────┴────────┐
+             │                 │
+
+          Fast Path         Slow Path
+
+             │                 │
+
+      CPU/GPU/Temp       RAM/Network/UI
+
+             │                 │
+
+      Native Telemetry      Renderer
+
+          cmd 52          Framebuffer
+
+             │            TFT Upload
+
+             └────────┬────────┘
+
+                   NOVA98
 ```
+
+- **Fast Path**：CPU/GPU/温度走键盘原生遥测通道（cmd 52，24 字节，1Hz，
+  零 Flash 写入），由 `TelemetryScheduler` 按变化增量发送。
+- **Slow Path**：RAM/网络/布局渲染成 240×135 帧（cmd 80），默认最短 30s、
+  变化阈值 + 帧哈希去重。
 
 硬件驱动与业务数据完全解耦；所有写操作仅在显式命令中发生。
 
