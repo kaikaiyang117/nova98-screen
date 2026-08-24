@@ -9,6 +9,7 @@ metrics:
   cpu: true
   memory: true
   temperature: true
+  gpu: true
   network: true
 
 thresholds:
@@ -18,6 +19,20 @@ thresholds:
   memory: 5
 
   temperature: 3
+
+telemetry:
+
+  enabled: true
+
+  interval: 1.0
+
+  force_interval: 5.0
+
+  thresholds:
+
+    cpu: 1
+    gpu: 1
+    temperature: 1
 
 layout:
 
