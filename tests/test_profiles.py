@@ -21,6 +21,7 @@ class FakeHidModule:
     def __init__(self, infos):
         self.infos = infos
         self.opened: list[int] = []
+        self.device = None  # replaced per-test via monkeypatch
 
     def enumerate(self, vendor_id=None, product_id=None):
         return [i for i in self.infos if i["vendor_id"] == vendor_id and i["product_id"] == product_id]
@@ -31,7 +32,7 @@ def _device_info(interface_number: int) -> dict:
         "vendor_id": NOVA98.vendor_id,
         "product_id": NOVA98.product_id,
         "interface_number": interface_number,
-        "usage_page": {2: 0xFF68, 3: 0xFF67}[interface_number],
+        "usage_page": {0: 0x0001, 1: 0x000C, 2: 0xFF68, 3: 0xFF67}[interface_number],
         "path": f"if{interface_number}".encode(),
         "product_string": "AULA NOVA98",
         "manufacturer_string": "AULA",
@@ -50,7 +51,7 @@ def test_open_selects_control_interface_2_and_tft_interface_3(monkeypatch):
 
     fake = FakeHidModule([_device_info(0), _device_info(1), _device_info(2), _device_info(3)])
     monkeypatch.setattr("nova98.device.hid_device.hid", fake)
-    monkeypatch.setattr("nova98.device.hid_device.hid.device", lambda: FakeDevice())
+    fake.device = lambda: FakeDevice()
 
     dev = Nova98Hid(NOVA98)
     dev.open()
