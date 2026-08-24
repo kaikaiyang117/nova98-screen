@@ -1,0 +1,24 @@
+display:
+
+  refresh:
+    min_interval: 30
+    force_interval: 300
+
+metrics:
+
+  cpu: true
+  memory: true
+  temperature: true
+  network: true
+
+thresholds:
+
+  cpu: 10
+
+  memory: 5
+
+  temperature: 3
+
+layout:
+
+  name: system

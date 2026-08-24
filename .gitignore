@@ -6,5 +6,4 @@ logs/
 device_dump.json
 dashboard-preview.png
 preview.png
-config.yaml
 .venv/
