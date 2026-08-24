@@ -22,6 +22,8 @@ from nova98.device.profiles import NOVA98
 from nova98.display.uploader import SafetyError, UploadError, upload_single_frame
 from nova98.metrics.service import MetricsService
 from nova98.scheduler.daemon import RECONNECT_INTERVAL_S, ScreenDaemon
+from nova98.telemetry.model import TelemetryStatus
+from nova98.telemetry.sender import TelemetrySender, TelemetryTransportError
 
 logger = logging.getLogger("nova98")
 
@@ -136,6 +138,38 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_telemetry_test(args) -> int:
+    status = TelemetryStatus(
+        cpu_usage=args.cpu,
+        cpu_temperature=args.cpu_temp,
+        gpu_usage=args.gpu,
+        gpu_temperature=args.gpu_temp,
+        temperature_current=args.current_temp,
+        temperature_high=args.high_temp,
+        temperature_low=args.low_temp,
+        weather_code=args.weather,
+        humidity=args.humidity,
+    )
+    from nova98.telemetry.encoder import encode_system_status
+
+    payload = encode_system_status(status)
+    print(f"TelemetryStatus: {status}")
+    print(f"Encoded payload ({len(payload)} bytes): {payload.hex(' ')}")
+
+    if args.dry_run:
+        print("dry-run: not sent to device.")
+        return 0
+
+    try:
+        with Nova98Hid(NOVA98) as dev:
+            TelemetrySender(dev).send(status)
+    except (TelemetryTransportError, OSError, ValueError) as exc:
+        print(f"FAILED: {exc}")
+        return 2
+    print("Sent once. Check the keyboard screen.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nova98-screen", description=__doc__)
     parser.add_argument("--debug", action="store_true")
@@ -160,6 +194,24 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", help="background refresh loop")
     p_run.add_argument("--config", default="config.yaml")
     p_run.set_defaults(func=cmd_run)
+
+    p_tel = sub.add_parser(
+        "telemetry-test", help="send one cmd 52 telemetry status (single shot)"
+    )
+    for name, default in (
+        ("--cpu", None),
+        ("--cpu-temp", None),
+        ("--gpu", None),
+        ("--gpu-temp", None),
+        ("--current-temp", None),
+        ("--high-temp", None),
+        ("--low-temp", None),
+        ("--weather", None),
+        ("--humidity", None),
+    ):
+        p_tel.add_argument(name, type=int, default=default)
+    p_tel.add_argument("--dry-run", action="store_true", help="encode and print only")
+    p_tel.set_defaults(func=cmd_telemetry_test)
 
     args = parser.parse_args(argv)
     setup_logging(args.debug)
