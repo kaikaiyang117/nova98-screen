@@ -1,8 +1,8 @@
 """HID transport for NOVA98.
 
-Real interface roles (from AULA HUB JS, docs/protocol.md):
-- Interface 2 / usage page 0xFF68: control commands (0xAA-framed)
-- Interface 3 / usage page 0xFF67: TFT image stream, 4104-byte output reports
+Interface roles (verified, docs/protocol.md):
+- profile.control  = Interface 2 / usage page 0xFF68: control commands
+- profile.display  = Interface 3 / usage page 0xFF67: TFT image stream
 
 Safety: constructing this class sends nothing. All writes happen in explicit methods.
 """
@@ -35,28 +35,32 @@ class Nova98Hid:
         infos = hid.enumerate(vendor_id=self.profile.vendor_id, product_id=self.profile.product_id)
 
         if self._control is None:
-            ctrl = [
-                i
-                for i in infos
-                if i["interface_number"] == 2
-                and (i.get("usage_page") or 0) == self.profile.display_usage_page
-            ]
+            ctrl = self._match(infos, self.profile.control)
             if not ctrl:
-                raise HidError("control HID interface (2 / FF68) not found")
+                raise HidError(
+                    f"control HID interface ({self.profile.control.interface_number} / "
+                    f"{self.profile.control.usage_page:#06x}) not found"
+                )
             self._control = hid.device()
             self._control.open_path(ctrl[0]["path"])
 
         if self._tft is None:
-            tft = [
-                i
-                for i in infos
-                if i["interface_number"] == 3
-                and (i.get("usage_page") or 0) == self.profile.control_usage_page
-            ]
+            tft = self._match(infos, self.profile.display)
             if not tft:
-                raise HidError("TFT HID interface (3 / FF67) not found")
+                raise HidError(
+                    f"TFT HID interface ({self.profile.display.interface_number} / "
+                    f"{self.profile.display.usage_page:#06x}) not found"
+                )
             self._tft = hid.device()
             self._tft.open_path(tft[0]["path"])
+
+    def _match(self, infos: list[dict], iface) -> list[dict]:
+        return [
+            i
+            for i in infos
+            if i["interface_number"] == iface.interface_number
+            and (i.get("usage_page") or 0) == iface.usage_page
+        ]
 
     def close(self) -> None:
         for dev in (self._control, self._tft):
@@ -74,6 +78,16 @@ class Nova98Hid:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+    @property
+    def opened_interfaces(self) -> tuple[str, str]:
+        """For tests/diagnostics: which interfaces were opened."""
+        roles = []
+        if self._control is not None:
+            roles.append(f"control=if{self.profile.control.interface_number}")
+        if self._tft is not None:
+            roles.append(f"tft=if{self.profile.display.interface_number}")
+        return tuple(roles)  # type: ignore[return-value]
 
     # -- TFT stream channel --------------------------------------------------
 
@@ -135,6 +149,14 @@ class Nova98Hid:
             addr += len(chunk)
         _ = size
         return payloads
+
+    def send_temporary_data(self, payload: bytes, max_retries: int = 0) -> list[bytes]:
+        """cmd 52 SET_TEMPORARY_COMMAND_DATA (system status / clock).
+
+        AULA HUB sends this with default timeout and no retries for the
+        screen-info variant; ACK expected as `55 34` (same-cmd response).
+        """
+        return self.send_control_command(cmd=0x34, data=payload, max_retries=max_retries)
 
     def _read_control_response(self, expected_cmd: int, timeout_ms: int) -> bytes | None:
         deadline = time.monotonic() + timeout_ms / 1000

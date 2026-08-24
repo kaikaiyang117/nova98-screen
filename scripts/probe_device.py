@@ -34,7 +34,7 @@ def main() -> int:
     interfaces = [
         i
         for i in hid.enumerate(vendor_id=NOVA98.vendor_id, product_id=NOVA98.product_id)
-        if i["interface_number"] == 3 and i.get("usage_page") == NOVA98.control_usage_page
+        if i["interface_number"] == 3 and i.get("usage_page") == NOVA98.display.usage_page
     ]
     if not interfaces:
         print("Control interface (3 / FF67) not found. Is the keyboard in USB wired mode?")
