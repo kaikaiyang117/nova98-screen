@@ -3,10 +3,10 @@ from PIL import Image
 
 from nova98.device.profiles import NOVA98
 from nova98.display.framebuffer import (
-    HEADER_SIZE,
-    PAGE_SIZE,
+    CHUNK_PAYLOAD_SIZE,
     FrameBufferError,
     build_frame_buffer,
+    iter_chunks,
 )
 
 
@@ -15,9 +15,22 @@ def test_single_frame_payload_layout():
     fb = build_frame_buffer(image, NOVA98)
 
     assert fb.frame_count == 1
-    # 256-byte header + 64800 pixels = 65056, page-padded to 16 * 4096.
-    assert HEADER_SIZE + NOVA98.width * NOVA98.height * 2 == 65056
-    assert fb.size == 16 * PAGE_SIZE == 65536
+    # 256-byte header + 64800 pixel bytes.
+    assert len(fb.payload) == 256 + NOVA98.width * NOVA98.height * 2
+    assert fb.chunk_count == 16
+    chunks = iter_chunks(fb.payload)
+    assert len(chunks) == 16
+    assert all(len(c) == CHUNK_PAYLOAD_SIZE for c in chunks)
+    # Last chunk is zero-padded.
+    assert chunks[15][:3616] == fb.payload[15 * CHUNK_PAYLOAD_SIZE :]
+    assert all(b == 0 for b in chunks[15][3616:])
+
+
+def test_header_layout():
+    image = Image.new("RGB", (NOVA98.width, NOVA98.height), (0, 0, 0))
+    fb = build_frame_buffer(image, NOVA98)
+    assert fb.payload[0] == 1      # frame count
+    assert fb.payload[1] == 0      # single-frame delay slot forced 0
 
 
 def test_rejects_wrong_dimensions():

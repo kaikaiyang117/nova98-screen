@@ -1,4 +1,8 @@
-"""HID transport for control (feature reports) and LCD (output reports) interfaces.
+"""HID transport for NOVA98.
+
+Real interface roles (from AULA HUB JS, docs/protocol.md):
+- Interface 2 / usage page 0xFF68: control commands (0xAA-framed)
+- Interface 3 / usage page 0xFF67: TFT image stream, 4104-byte output reports
 
 Safety: constructing this class sends nothing. All writes happen in explicit methods.
 """
@@ -11,8 +15,8 @@ import hid
 
 from nova98.device.profiles import DeviceProfile
 
-CMD_DELAY_S = 0.035
-ACK_TIMEOUT_MS = 300
+ACK_TIMEOUT_MS = 2000
+MAX_RETRIES = 3
 
 
 class HidError(IOError):
@@ -22,49 +26,47 @@ class HidError(IOError):
 class Nova98Hid:
     def __init__(self, profile: DeviceProfile):
         self.profile = profile
-        self._control: hid.device | None = None
-        self._lcd: hid.device | None = None
+        self._control = None
+        self._tft = None
 
     # -- lifecycle ---------------------------------------------------------
 
     def open(self) -> None:
-        import hid as _hid
-
-        infos = _hid.enumerate(vendor_id=self.profile.vendor_id, product_id=self.profile.product_id)
+        infos = hid.enumerate(vendor_id=self.profile.vendor_id, product_id=self.profile.product_id)
 
         if self._control is None:
             ctrl = [
                 i
                 for i in infos
-                if i["interface_number"] == 3
-                and (i.get("usage_page") or 0) == self.profile.control_usage_page
-            ]
-            if not ctrl:
-                raise HidError("control HID interface not found")
-            self._control = hid.device()
-            self._control.open_path(ctrl[0]["path"])
-
-        if self._lcd is None:
-            lcd = [
-                i
-                for i in infos
                 if i["interface_number"] == 2
                 and (i.get("usage_page") or 0) == self.profile.display_usage_page
             ]
-            if not lcd:
-                raise HidError("LCD HID interface not found")
-            self._lcd = hid.device()
-            self._lcd.open_path(lcd[0]["path"])
+            if not ctrl:
+                raise HidError("control HID interface (2 / FF68) not found")
+            self._control = hid.device()
+            self._control.open_path(ctrl[0]["path"])
+
+        if self._tft is None:
+            tft = [
+                i
+                for i in infos
+                if i["interface_number"] == 3
+                and (i.get("usage_page") or 0) == self.profile.control_usage_page
+            ]
+            if not tft:
+                raise HidError("TFT HID interface (3 / FF67) not found")
+            self._tft = hid.device()
+            self._tft.open_path(tft[0]["path"])
 
     def close(self) -> None:
-        for dev in (self._control, self._lcd):
+        for dev in (self._control, self._tft):
             if dev is not None:
                 try:
                     dev.close()
                 except OSError:
                     pass
         self._control = None
-        self._lcd = None
+        self._tft = None
 
     def __enter__(self) -> "Nova98Hid":
         self.open()
@@ -73,41 +75,72 @@ class Nova98Hid:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    # -- control channel ---------------------------------------------------
+    # -- TFT stream channel --------------------------------------------------
 
-    def send_command(self, payload: bytes, expect_ack: bool = True) -> bytes | None:
-        """Send a 64-byte feature-report command on interface 3 and read back."""
+    def write_tft_chunk(self, report: bytes, retries: int = MAX_RETRIES) -> bytes | None:
+        """Send one 4104-byte TFT chunk and wait for the 55 41 ACK.
+
+        `report` must be exactly 8 header + 4096 payload bytes.
+        """
+        if self._tft is None:
+            raise HidError("TFT interface not open")
+        if len(report) != 4104:
+            raise HidError(f"TFT chunk is {len(report)} bytes, expected 4104")
+
+        last_error: str | None = None
+        for attempt in range(retries + 1):
+            written = self._tft.write(b"\x00" + report)
+            if written < 0:
+                raise HidError("TFT chunk write failed")
+            ack = self._tft.read(64, timeout_ms=ACK_TIMEOUT_MS)
+            if ack:
+                return bytes(ack)
+            last_error = f"timeout on attempt {attempt + 1}"
+        raise HidError(f"TFT ACK missing after {retries + 1} attempts ({last_error})")
+
+    # -- control channel (0xAA-framed commands on FF68) ----------------------
+
+    def send_control_command(self, cmd: int, data: bytes = b"", timeout_ms: int = 500,
+                             max_retries: int = 0, response_cmd: int | None = None,
+                             content_size: int | None = None) -> list[bytes]:
+        """Generic An() framing: AA <cmd> <len> <addr LE16> ... data. Returns payloads."""
         if self._control is None:
             raise HidError("control interface not open")
-        if len(payload) > 64:
-            raise HidError(f"command too long: {len(payload)}")
+        expected = response_cmd if response_cmd is not None else cmd
+        size = content_size if content_size is not None else len(data)
 
-        report = b"\x00" + payload.ljust(64, b"\x00")
-        written = self._control.send_feature_report(report)
-        if written < 0:
-            raise HidError("SET_FEATURE failed")
-        time.sleep(CMD_DELAY_S)
+        chunks = [data[i : i + 24] for i in range(0, len(data), 24)] or [b""]
+        addr = 0
+        payloads: list[bytes] = []
+        for n, chunk in enumerate(chunks):
+            pkt = bytearray(32)
+            pkt[0] = 0xAA
+            pkt[1] = cmd & 0xFF
+            pkt[2] = len(chunk) & 0xFF
+            pkt[3] = addr & 0xFF
+            pkt[4] = (addr >> 8) & 0xFF
+            pkt[6] = 1 if n == len(chunks) - 1 else 0
+            pkt[8 : 8 + len(chunk)] = chunk
 
-        if not expect_ack:
-            return None
-        response = bytes(self._control.get_feature_report(0x00, 64))
-        if not response:
-            raise HidError("empty GET_FEATURE response")
-        return response
+            for attempt in range(max_retries + 1):
+                written = self._control.write(b"\x00" + bytes(pkt))
+                if written < 0:
+                    raise HidError(f"control write failed for cmd {cmd:#x}")
+                resp = self._read_control_response(expected, timeout_ms)
+                if resp is not None:
+                    payloads.append(resp[8:])
+                    break
+            else:
+                raise HidError(f"no ACK for control cmd {cmd:#x}")
+            addr += len(chunk)
+        _ = size
+        return payloads
 
-    # -- LCD channel -------------------------------------------------------
-
-    def write_page(self, page: bytes) -> bytes | None:
-        """Write one <=4096-byte pixel page via output report; try to read ACK."""
-        if self._lcd is None:
-            raise HidError("LCD interface not open")
-        if len(page) > 4096:
-            raise HidError(f"page too large: {len(page)}")
-
-        report = b"\x00" + page
-        written = self._lcd.write(report)
-        if written < 0:
-            raise HidError("LCD page write failed")
-
-        ack = self._lcd.read(64, timeout_ms=ACK_TIMEOUT_MS)
-        return bytes(ack) if ack else None
+    def _read_control_response(self, expected_cmd: int, timeout_ms: int) -> bytes | None:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline:
+            remaining = max(1, int((deadline - time.monotonic()) * 1000))
+            resp = self._control.read(64, timeout_ms=remaining)
+            if resp and resp[0] == 0x55 and resp[1] == expected_cmd:
+                return bytes(resp)
+        return None

@@ -1,86 +1,79 @@
-# NOVA98 协议分析
+# NOVA98 协议文档（已验证）
 
-状态：**结构比对完成，写入协议尚未验证。**
+来源：AULA HUB 官方 WebHID 配置器 JS 逆向（hub.aulacn.com），
+2026-08-25 提取并整理。**此为官方驱动实际使用的协议，非推断。**
 
-## 1. F108 Pro 已知协议（来源：parsiya/f108-pro、kitan-shiragami/aula-tft-uploader）
-
-### 设备
-
-| 项 | 值 |
-|---|---|
-| VID:PID | `0x0C45:0x800A` (SONiX) |
-| Product | `AULA F108Pro` |
-| 最大帧数 | 141 |
-
-### HID 接口
-
-| Interface | Usage Page | 用途 |
-|---|---|---|
-| 2 | `0xFF68` | LCD 像素数据：4096 字节 Output Report；每页 ACK 为 64 字节 Input Report `01 5A 02 00 ...`（300ms 超时，ACK 可容忍丢失） |
-| 3 | `0xFF13` | 控制：64 字节 Feature Report（hidapi 需前置 `0x00` report ID） |
-
-### 控制命令序列（Interface 3 Feature Reports）
-
-1. **BEGIN**: `04 18`（必须读回 ACK）
-2. **Image header**: `04 72 <slot> ... <page_count LE16 @ offset 8..9>`
-3. **像素页**: 经 Interface 2 interrupt OUT 发送（每 4096 字节页 = 64 × 64 字节包）。
-   ⚠️ 若用 SET_REPORT 控制传输发送像素会直接崩溃固件。
-4. **APPLY**: `04 02`（键盘写入 SPI Flash，必须读回）
-
-控制命令间隔 ≥ 35ms（厂商 `cmd_delaytime=35`）。
-
-### 图像格式
-
-- 扁平缓冲：256 字节头 + N 帧 × (240×135×2 = 64800 字节 RGB565 小端)
-- 头：byte[0] = 帧数；byte[1+i] = 第 i 帧 delay（单位 2ms，钳位 1–255）；余下补 `0xFF`
-- 整体按 4096 字节分页，末页用 `0xFF` 补齐
-- 单帧 = 65056 字节 = 恰好 16 页
-- 超过 141 帧无固件保护，会覆盖相邻 SPI Flash 内置图形资源（不可恢复）
-
-## 2. NOVA98 实际 USB Descriptor（2026-08-25 实测）
+## 1. 设备
 
 ```text
-VID:PID        0x38A6:0x273B
-Manufacturer   AULA
-Product        AULA NOVA98
+VID:PID   0x38A6:0x273B（另有有线变体 0x275D）
+VID 0x38A6 为 AULA 新一代非 SONiX 产品线专用
 ```
 
-| Interface | Usage Page | Usage | 推断 |
-|---|---|---|---|
-| 0 | 0x0001 | 0x0006 | 键盘 |
-| 1 | 0x000C / 0x0001 | 多个 | 消费/鼠标 |
-| 2 | **0xFF68** | 0x0061 | 疑似 LCD 像素传输 |
-| 3 | **0xFF67** | 0x0061 | 疑似控制通道 |
+## 2. HID 接口角色（与 F108 Pro 相反！）
 
-## 3. 相同点
+| Interface | Usage Page | 角色 |
+|---|---|---|
+| 0 | 0x0001 | 键盘 |
+| 1 | 0x000C/0x0001 | 消费/鼠标 |
+| **2** | **0xFF68** | 控制命令通道（0xAA 帧格式，32 字节 report） |
+| **3** | **0xFF67** | TFT 图像流（4104 字节 output report） |
 
-- Interface 布局一致：4 个 HID 接口，Interface 2/3 承担 LCD + 控制角色。
-- **LCD 接口 Usage Page 完全一致（`0xFF68`），且都在 Interface 2**。
-- 屏幕规格预期一致：240×135 RGB565，GIF 上限 141 帧。
+Report ID 统一为 0。hidapi 发送时前置 `0x00`。
 
-## 4. 不同点
+## 3. TFT 图像上传（唯一必需的序列）
 
-- VID/PID 完全不同：`38A6:273B` vs SONiX `0C45:800A`（主控可能不是 SONiX）。
-- 控制接口 Usage Page：`FF67` vs `FF13`。
-- 控制命令字节序列是否相同 **未验证**。
+**没有 BEGIN/APPLY 握手。** 全部数据通过一条分块命令发送：
 
-## 5. 兼容性判断
+每个 wire report（4104 字节）：
 
-结构上高度疑似同一方案家族（LCD 数据路径几乎可以确定沿用 FF68 中断 OUT +
-ACK IN 模式），但控制通道命令集不能假定兼容。
+| Offset | 内容 |
+|---|---|
+| 0 | `0xAA` |
+| 1 | `0x50` (SET_TFT_USER_ANIMATION) |
+| 2-3 | 分块序号 LE16，从 0 开始 |
+| 4-5 | 总块数 LE16 |
+| 6-7 | 常量 `0x50 0x06`（源码字面量 `6619136/4096`） |
+| 8..4103 | 4096 字节 payload |
 
-结论：
-- 可以按「F108 Pro 风格」实现 uploader 骨架与安全护栏；
-- 第一次真实上传前必须先做只读/最小化探测（BEGIN + 读回 ACK），
-  并由用户人工确认后才能进入 Phase 6 单帧上传。
+payload 流 = 256 字节头 + N 帧 × RGB565 小端像素：
 
-## 6. 停止条件（触发即停止一切写入）
+- 头 `[0]` = 帧数；`[1+i]` = 第 i 帧 delay×5；最后一帧 delay 槽强制 0；其余 `0xFF`
+- RGB565：`(r>>3)<<11 | (g>>2)<<5 | b>>3`，小端
+- 单帧 = 256 + 64800 = 65056 字节 → 16 块，末块补 `\x00`
 
-1. BEGIN 命令读回无响应或非预期 ACK。
-2. 首个 4096 字节页出现 timeout / device reset / disconnect / unknown response。
-3. 键盘出现乱码、内置菜单异常、屏幕异常 → 立即停止 Flash 写入并抓包分析。
+每块 ACK：input report，`byte[0]=0x55, byte[1]=0x41`（SET_LED_USER_ANIMATION），
+超时 2000ms，重试 3 次。发完最后一块后固件自动开始播放/显示。
+
+## 4. 控制命令帧格式（Interface 2 / FF68）
+
+32 字节 report：`AA <cmd> <len> <addr LE16> r r <last=1> r <data...>`
+响应为 input report：`55 <cmd> ... <data@8:>`，按 cmd 匹配，超时 500ms。
+
+关键命令：
+
+| cmd | 名称 | 说明 |
+|---|---|---|
+| 16 | GET_DEVICE_INFO | 偏移 22-23 = tftMaxFrames（可用帧数 = 值−1，fallback 140） |
+| 52 | SET_TEMPORARY_COMMAND_DATA | 子命令：时钟同步（`5A 01 5A` + 年月日时分秒星期）、**系统状态覆盖层** |
+| 80 | SET_TFT_USER_ANIMATION | 图像流（见上） |
+| 81 | SET_TFT_BUILT_IN_INDEX | 切换内置动画槽位 |
+
+### cmd 52 系统状态覆盖层（重要！）
+
+24 字节 buffer：byte[6]='Z'(90)，然后：
+`byte[12]=CPU占用 byte[13]=CPU温度(s8) byte[14]=GPU占用 byte[15]=GPU温度(s8)
+byte[16]=当前温度 byte[17]=最高温 byte[18]=最低温 byte[19]=天气 byte[20]=湿度`
+
+→ 固件原生支持系统监控数据显示，第二阶段可直接利用。
+
+## 5. 与 F108 Pro 的对比结论
+
+完全不同的协议家族。F108 Pro 的 BEGIN/HEADER/APPLY、FF13/FF68 角色分配、
+0xFF 页填充均不适用于 NOVA98。（此前按 F108 Pro 风格发送的探测命令
+未造成任何影响——屏幕无变化即证明。）
 
 ## 参考
 
-- https://github.com/parsiya/f108-pro (`ai-docs/hid-protocol.md`)
-- https://github.com/kitan-shiragami/aula-tft-uploader (`aula_tft/protocol.py`, `transport.py`, `device.py`)
+- AULA HUB: https://hub.aulacn.com （WebHID，Chrome/Edge）
+- 方法论参考：https://github.com/sgtflixy/AulaControl
