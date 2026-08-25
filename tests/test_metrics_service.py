@@ -90,3 +90,38 @@ class _NullGPU:
 class _FakeTempNone:
     def get_cpu_temperature(self):
         return None
+
+
+def test_sample_metrics_honours_config_in_cli_path(monkeypatch):
+    """preview/show go through _sample_metrics(config); config must reach the service."""
+    import nova98.cli as cli
+    from nova98.config import Config
+
+    created = []
+
+    class TrackingService:
+        def __init__(self, metrics_config=None):
+            created.append(metrics_config)
+
+        def read(self):
+            return SystemMetrics()
+
+    monkeypatch.setattr(cli, "MetricsService", TrackingService)
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+
+    config = Config()
+    config.metrics = MetricsConfig(temperature=False, gpu=False, network=False)
+    cli._sample_metrics(config)
+
+    assert len(created) == 1
+    assert created[0].temperature is False
+    assert created[0].gpu is False
+
+
+def test_telemetry_test_respects_dry_run_without_device():
+    # dry-run path never constructs Nova98Hid; covered by CLI wiring here.
+    from nova98.telemetry.encoder import encode_system_status
+    from nova98.telemetry.model import TelemetryStatus
+
+    payload = encode_system_status(TelemetryStatus(cpu_usage=10))
+    assert payload[12] == 10

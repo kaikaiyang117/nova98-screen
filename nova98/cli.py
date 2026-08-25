@@ -64,14 +64,14 @@ def cmd_devices(_args) -> int:
 
 
 def _sample_metrics(config: Config | None = None):
-    service = MetricsService()
+    service = MetricsService(config.metrics if config is not None else None)
     service.read()  # prime counters
     time.sleep(1.1)
     return service.read()
 
 
-def cmd_metrics(_args) -> int:
-    m = _sample_metrics()
+def cmd_metrics(args) -> int:
+    m = _sample_metrics(Config.load(getattr(args, "config", None)))
 
     def fmt(value, suffix):
         return "--" if value is None else f"{value:.0f}{suffix}"
@@ -91,10 +91,10 @@ def cmd_metrics(_args) -> int:
     return 0
 
 
-def cmd_telemetry(_args) -> int:
+def cmd_telemetry(args) -> int:
     from nova98.telemetry.mapper import metrics_to_telemetry
 
-    status = metrics_to_telemetry(_sample_metrics())
+    status = metrics_to_telemetry(_sample_metrics(Config.load(args.config)))
     print("Native telemetry channel (cmd 52) values:")
     print(f"CPU      {status.cpu_usage if status.cpu_usage is not None else '--'}")
     print(f"CPU TEMP {status.cpu_temperature if status.cpu_temperature is not None else '--'}")
