@@ -16,6 +16,7 @@ from nova98.renderer.renderer import render
 from nova98.renderer.state import StaticDisplayState, static_display_state
 from nova98.scheduler.change_detector import StaticChangeDetector, StaticThresholds
 from nova98.scheduler.refresh import RefreshLimiter
+from nova98.scheduler.stats import StaticUploadStats
 from nova98.scheduler.telemetry import TelemetryScheduler
 from nova98.telemetry.mapper import metrics_to_telemetry
 from nova98.telemetry.model import TelemetryStatus
@@ -99,11 +100,15 @@ class TelemetryController:
 
 
 class StaticFrameController:
-    """SLOW PATH: RAM / network / layout only, throttled flash writes.
+    """Active display channel: CPU / CPU temperature / RAM / network rendered
+    to a 240x135 framebuffer and uploaded via cmd 80.
 
-    Change detection is relative to `_last_committed_state` — the last state
-    successfully displayed on screen — so slow drift accumulates instead of
-    being swallowed. The baseline only advances after a successful upload.
+    Flash-write safety invariants:
+    - Change detection is relative to `_last_committed_state` (the last state
+      successfully displayed), so slow drift accumulates instead of being
+      swallowed. The baseline only advances after a successful upload.
+    - An identical framebuffer is NEVER re-uploaded, even when the force
+      interval expires. Force means "re-evaluate", not "rewrite".
     """
 
     def __init__(self, config: Config):
@@ -121,34 +126,53 @@ class StaticFrameController:
         self._last_committed_state: StaticDisplayState | None = None
         self._last_frame_hash: str | None = None
         self._pending_reason = "manual"
+        self.stats = StaticUploadStats()
 
     def update(self, state: StaticDisplayState) -> Image.Image | None:
         forced = self.limiter.must_force()
         if not forced and not self.limiter.allow():
-            logger.debug("Frame skipped: min interval not reached")
+            logger.debug("Static frame skipped: min interval not reached")
+            self.stats.skipped_interval += 1
             return None
 
         changed = self.detector.changed(self._last_committed_state, state)
         if not forced and not changed:
-            logger.debug("Frame skipped: no significant change")
+            logger.debug("Static frame skipped: unchanged state")
+            self.stats.skipped_unchanged += 1
             return None
 
         image = render(state)
         digest = build_frame_buffer(image, NOVA98).sha256
-        if not forced and digest == self._last_frame_hash:
+        if digest == self._last_frame_hash:
             # Screen already shows exactly this content; commit silently.
+            # Applies regardless of force: force re-evaluates, never rewrites.
             self._commit(state, digest)
-            logger.info("Frame skipped: identical hash (state committed)")
+            self.stats.skipped_hash += 1
+            logger.info("Static frame skipped: identical framebuffer hash")
             return None
 
-        self._pending_reason = "forced" if forced else "changed"
+        self.stats.attempted += 1
+        self._pending_reason = "forced-evaluation" if forced else "changed"
         return image
 
     def mark_uploaded(self, state: StaticDisplayState) -> None:
         """Commit baseline ONLY after a successful upload."""
         digest = build_frame_buffer(render(state), NOVA98).sha256
         self._commit(state, digest)
-        logger.info("Screen updated (%s)", self._pending_reason)
+        self.stats.succeeded += 1
+        logger.info(
+            "Static frame uploaded: reason=%s total_uploads=%d",
+            self._pending_reason,
+            self.stats.succeeded,
+        )
+
+    def mark_failed(self) -> None:
+        self.stats.failed += 1
+
+    def _commit(self, state: StaticDisplayState, digest: str) -> None:
+        self._last_committed_state = state
+        self._last_frame_hash = digest
+        self.limiter.mark_updated()
 
     def _commit(self, state: StaticDisplayState, digest: str) -> None:
         self._last_committed_state = state
@@ -233,6 +257,7 @@ class ScreenRuntime:
                 self._enter_backoff()
                 return False
             except (OSError, HidError) as exc:
+                self.static.stats.failed += 1
                 logger.warning("Upload attempt %d failed: %s", attempt, exc)
                 time.sleep(1.0)
 

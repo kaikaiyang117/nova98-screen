@@ -120,18 +120,32 @@ def test_failed_upload_does_not_commit_baseline(monkeypatch):
     assert controller.update(state(memory_percent=78.0)) is not None
 
 
-def test_force_interval_really_forces(monkeypatch):
+def test_force_does_not_rewrite_identical_frame(monkeypatch):
+    """Force interval expiry must NEVER re-upload an identical framebuffer."""
     controller, clock = make_controller(monkeypatch, min_interval=30.0, force_interval=300.0)
 
     displayed = state()
     assert controller.update(displayed) is not None
     controller.mark_uploaded(displayed)
 
-    clock["t"] += 100
-    # Identical data inside force window -> nothing.
+    clock["t"] += 301  # force interval long expired
+    # Identical state -> identical hash -> no upload, even though forced.
     assert controller.update(state()) is None
+    assert controller.stats.skipped_hash == 1
+    assert controller.stats.succeeded == 1  # only the initial upload
 
-    clock["t"] += 210  # total 310s >= force_interval
-    # Even with IDENTICAL data, must_force triggers a render.
-    assert controller.update(state()) is not None
+
+def test_force_uploads_when_frame_actually_changed(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0, force_interval=300.0)
+
+    displayed = state(memory_percent=50.0)
+    assert controller.update(displayed) is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 331  # min + force both expired
+    candidate = state(memory_percent=53.0)
+    result = controller.update(candidate)
+    assert result is not None
+    controller.mark_uploaded(candidate)
+    assert controller._last_committed_state.memory_percent == 53.0
 
