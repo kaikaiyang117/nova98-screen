@@ -7,6 +7,7 @@ Commands:
     preview         render dashboard to preview.png
     show            upload one static dashboard frame
     telemetry-test  send one cmd 52 telemetry status (single shot)
+    debug           local visual debugger (browser, manual uploads)
     run             background monitoring runtime
 """
 
@@ -175,6 +176,14 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_debug(args) -> int:
+    """Local visual debugger (127.0.0.1 only, manual uploads)."""
+    from nova98.debug.server import run_debug_server
+
+    run_debug_server(port=args.port)
+    return 0
+
+
 def cmd_time_sync(args) -> int:
     """Official AULA HUB clock-sync (cmd 52 clock variant, pke layout)."""
     import datetime as dt_mod
@@ -286,6 +295,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_clock.add_argument("--dry-run", action="store_true", help="print payload only")
     p_clock.set_defaults(func=cmd_time_sync)
+
+    p_debug = sub.add_parser(
+        "debug",
+        help="local visual debugger: tweak values in browser, upload manually",
+    )
+    p_debug.add_argument("--port", type=int, default=8765)
+    p_debug.set_defaults(func=cmd_debug)
 
     args = parser.parse_args(argv)
     setup_logging(args.debug)
