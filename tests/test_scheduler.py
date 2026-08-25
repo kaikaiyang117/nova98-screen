@@ -149,3 +149,46 @@ def test_force_uploads_when_frame_actually_changed(monkeypatch):
     controller.mark_uploaded(candidate)
     assert controller._last_committed_state.memory_percent == 53.0
 
+
+
+def test_temperature_slow_drift_accumulates(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+    displayed = state(cpu_temperature=50.0)
+    assert controller.update(displayed) is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 31
+    # threshold 3, judged against displayed 50 (not the previous sample):
+    assert controller.update(state(cpu_temperature=52.0)) is None   # +2 < 3
+    assert controller.update(state(cpu_temperature=54.0)) is not None  # +4 >= 3
+
+
+def test_network_tier_judged_against_committed_state(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+    committed = state(download_bytes_per_sec=100_000.0)  # tier 0
+    assert controller.update(committed) is not None
+    controller.mark_uploaded(committed)
+
+    clock["t"] += 31
+    # Previous-sample style detection would compare 300k vs 700k (same tier);
+    # correct behaviour compares each against committed 100k (tier 0).
+    assert controller.update(state(download_bytes_per_sec=700_000.0)) is not None  # tier 1
+
+
+def test_upload_failure_keeps_stats_consistent(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+    displayed = state(memory_percent=50.0)
+    assert controller.update(displayed) is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 31
+    candidate = state(memory_percent=90.0)
+    assert controller.update(candidate) is not None
+    assert controller.stats.attempted == 2
+    # Simulate failure: no mark_uploaded call.
+    controller.mark_failed()
+    clock["t"] += 31
+    # Baseline still 50 -> 53 is below threshold and stays skipped.
+    assert controller.update(state(memory_percent=53.0)) is None
+    summary = controller.stats.summary()
+    assert "uploads=1" in summary and "failed=1" in summary
