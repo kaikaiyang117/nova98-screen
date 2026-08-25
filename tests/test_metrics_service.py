@@ -125,3 +125,45 @@ def test_telemetry_test_respects_dry_run_without_device():
 
     payload = encode_system_status(TelemetryStatus(cpu_usage=10))
     assert payload[12] == 10
+
+
+def test_unparsable_tool_falls_through_to_next(monkeypatch):
+    """osx-cpu-temp prints 0.0 on Apple Silicon; provider must try smctemp next."""
+    from nova98.metrics.temperature import MacOSTemperatureProvider
+
+    calls = []
+
+    class FakeShutil:
+        def __init__(self, paths):
+            self.paths = paths
+
+        def which(self, tool):
+            calls.append(tool)
+            return self.paths.get(tool)
+
+    monkeypatch.setattr(
+        "nova98.metrics.temperature.shutil", FakeShutil(
+            {"osx-cpu-temp": "/usr/bin/osx-cpu-temp", "smctemp": "/usr/bin/smctemp"}
+        )
+    )
+
+    import subprocess as sp
+
+    outputs = {
+        "/usr/bin/osx-cpu-temp": "0.0°C\n",
+        "/usr/bin/smctemp": "63.9\n",
+    }
+
+    def fake_run(cmd, **kwargs):
+        out = outputs[cmd[0]]
+
+        class R:
+            stdout = out
+
+        return R()
+
+    monkeypatch.setattr("nova98.metrics.temperature.subprocess.run", fake_run)
+    value = MacOSTemperatureProvider().get_cpu_temperature()
+    assert value == 63.9
+    # smctemp tried first on Apple Silicon; both tools consulted.
+    assert calls[0] == "smctemp"

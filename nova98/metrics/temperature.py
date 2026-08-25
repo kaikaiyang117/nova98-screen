@@ -35,8 +35,10 @@ class MacOSTemperatureProvider(TemperatureProvider):
     """macOS has no psutil temperature support; try local tools, else None."""
 
     def get_cpu_temperature(self) -> float | None:
-        # osx-cpu-temp / aula-free SMC readers, if the user installed them.
-        for tool, args in (("osx-cpu-temp", []), ("smctemp", ["-c"])):
+        # SMC reader tools, tried in order. osx-cpu-temp prints 0.0 on Apple
+        # Silicon, so an unparsable or implausible reading must fall through
+        # to the next tool instead of ending the search.
+        for tool, args in (("smctemp", ["-c"]), ("osx-cpu-temp", [])):
             path = shutil.which(tool)
             if not path:
                 continue
@@ -44,9 +46,11 @@ class MacOSTemperatureProvider(TemperatureProvider):
                 out = subprocess.run(
                     [path, *args], capture_output=True, text=True, timeout=3
                 ).stdout
-                return self._parse(out)
+                value = self._parse(out)
             except (subprocess.TimeoutExpired, OSError):
                 continue
+            if value is not None:
+                return value
         # powermetrics needs root; try anyway in case of elevated shell.
         if shutil.which("powermetrics"):
             try:
