@@ -165,6 +165,7 @@ class StaticFrameController:
             return None
 
         self._pending_reason = "forced-evaluation" if forced else "changed"
+        self.stats.frames_prepared += 1
         return PreparedFrame(
             state=state,
             image=image,
@@ -172,18 +173,22 @@ class StaticFrameController:
             reason=self._pending_reason,
         )
 
-    def mark_uploaded(self, prepared: PreparedFrame) -> None:
+    def mark_uploaded(
+        self,
+        prepared: PreparedFrame,
+        result=None,
+    ) -> None:
         """Commit baseline ONLY after a successful upload of THIS prepared frame."""
         self._commit(prepared.state, prepared.digest)
-        self.stats.succeeded += 1
+        self.stats.frames_succeeded += 1
+        if result is not None:
+            self.stats.chunks_sent += getattr(result, "pages", 0)
+            self.stats.chunks_acked += getattr(result, "acks", 0)
         logger.info(
             "Static frame uploaded: reason=%s total_uploads=%d",
             prepared.reason,
-            self.stats.succeeded,
+            self.stats.frames_succeeded,
         )
-
-    def mark_failed(self) -> None:
-        self.stats.failed += 1
 
     def _commit(self, state: StaticDisplayState, digest: str) -> None:
         self._last_committed_state = state
@@ -271,17 +276,19 @@ class ScreenRuntime:
         from nova98.display.uploader import SafetyError
 
         for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
+            self.static.stats.wire_attempts += 1
             try:
-                self._backend.show(prepared.image)
-                self.static.mark_uploaded(prepared)
+                result = self._backend.show(prepared.image)
+                self.static.mark_uploaded(prepared, result)
                 logger.info("Upload attempt %d ok", attempt)
                 return True
             except SafetyError:
                 logger.exception("Safety limit violated; refusing further uploads")
+                self.static.stats.wire_failures += 1
                 self._enter_backoff()
                 return False
             except (OSError, HidError) as exc:
-                self.static.stats.failed += 1
+                self.static.stats.wire_failures += 1
                 logger.warning("Upload attempt %d failed: %s", attempt, exc)
                 time.sleep(1.0)
 

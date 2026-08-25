@@ -192,12 +192,12 @@ def test_upload_failure_keeps_stats_consistent(monkeypatch):
     candidate = state(memory_percent=90.0)
     assert controller.prepare(candidate) is not None
     # Simulate failure: no mark_uploaded call.
-    controller.mark_failed()
     clock["t"] += 31
     # Baseline still 50 -> 53 is below threshold and stays skipped.
     assert controller.prepare(state(memory_percent=53.0)) is None
+    assert controller.stats.frames_succeeded == 1
     summary = controller.stats.summary()
-    assert "uploads=1" in summary and "failed=1" in summary
+    assert "wire(attempts/failures)=0/1" in summary
 
 
 def test_config_validation_rejects_bad_values(tmp_path):

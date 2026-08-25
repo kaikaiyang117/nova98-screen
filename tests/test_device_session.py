@@ -181,7 +181,7 @@ def test_backoff_closes_and_reopens_hid(monkeypatch):
 
     assert runtime.state == "BACKOFF"
     assert not runtime.session.connected  # handle released, will re-enumerate
-    assert runtime.static.stats.failed >= 1
+    assert runtime.static.stats.wire_failures == 3
 
 
 def test_backoff_exits_via_reconnect(monkeypatch):
