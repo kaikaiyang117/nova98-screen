@@ -97,3 +97,68 @@ def test_runtime_disabled_telemetry_sends_nothing(monkeypatch):
 
     metrics = SystemMetrics(cpu_percent=50, timestamp=datetime(2026, 1, 1))
     runtime.tick(metrics)  # must not raise despite no real device
+
+
+def test_backoff_closes_and_reopens_hid(monkeypatch):
+    import time as time_mod
+
+    from nova98.scheduler.runtime import BACKOFF_S
+
+    runtime = ScreenRuntime(Config())
+    opened: list[int] = []
+    closed: list[int] = []
+
+    class FakeHidDev:
+        def close(self):
+            closed.append(1)
+
+    monkeypatch.setattr(
+        "nova98.display.uploader.upload_single_frame",
+        lambda image, dev: (_ for _ in ()).throw(OSError("wire gone")),
+    )
+
+    # Force a failing upload into backoff.
+    monkeypatch.setattr(runtime.session, "_hid", FakeHidDev())
+    sleeps = []
+    monkeypatch.setattr("nova98.scheduler.runtime.time.sleep", lambda s: sleeps.append(s))
+
+    from nova98.renderer.state import StaticDisplayState
+    from datetime import datetime
+
+    st = StaticDisplayState(memory_percent=10.0)
+    assert runtime._upload_with_retry(st) is False
+
+    assert runtime.state == "BACKOFF"
+    assert not runtime.session.connected  # handle released, will re-enumerate
+    assert runtime.telemetry._sender is None
+
+
+def test_backoff_exits_via_reconnect(monkeypatch):
+    runtime = ScreenRuntime(Config())
+    runtime.telemetry.enabled = False
+
+    connect_attempts = {"n": 0}
+
+    def fake_ensure():
+        connect_attempts["n"] += 1
+        return connect_attempts["n"] > 1
+
+    monkeypatch.setattr(runtime.session, "ensure_connected", fake_ensure)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("nova98.scheduler.runtime.time.monotonic", lambda: clock["t"])
+
+    # Simulate entering backoff now.
+    runtime._state = "BACKOFF"
+    runtime._backoff_until = clock["t"] + 60.0
+
+    metrics = SystemMetrics(timestamp=datetime(2026, 1, 1))
+    # Still in backoff window.
+    assert runtime.tick(metrics) is False
+    clock["t"] += 61.0
+    # Backoff expired: reconnect path runs again (attempt 1 fails).
+    assert runtime.tick(metrics) is False
+    assert runtime.state == "RECONNECTING"
+    assert connect_attempts["n"] == 1
+    assert runtime.tick(metrics) is False
+    assert connect_attempts["n"] == 2

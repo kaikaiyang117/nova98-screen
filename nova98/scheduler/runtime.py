@@ -203,9 +203,10 @@ class ScreenRuntime:
 
         # SLOW PATH: expensive framebuffer upload, static data only.
         try:
-            image = self.static.update(static_display_state(metrics))
+            state = static_display_state(metrics)
+            image = self.static.update(state)
             if image is not None:
-                uploaded = self._upload_with_retry(image)
+                uploaded = self._upload_with_retry(state)
         except (HidError, OSError) as exc:
             logger.warning("Static channel error: %s", exc)
             self.session.disconnect()
@@ -224,18 +225,22 @@ class ScreenRuntime:
                 return True
             except SafetyError:
                 logger.exception("Safety limit violated; refusing further uploads")
-                self.session.disconnect()
-                self._state = "BACKOFF"
-                self._backoff_until = time.monotonic() + BACKOFF_S
+                self._enter_backoff()
                 return False
             except (OSError, HidError) as exc:
                 logger.warning("Upload attempt %d failed: %s", attempt, exc)
                 time.sleep(1.0)
 
+        logger.error("Upload failed %d times, entering BACKOFF", MAX_UPLOAD_RETRIES)
+        self._enter_backoff()
+        return False
+
+    def _enter_backoff(self) -> None:
+        """Close the HID handle so BACKOFF recovery re-enumerates and reopens."""
+        self.telemetry.unbind()
+        self.session.disconnect()
         self._state = "BACKOFF"
         self._backoff_until = time.monotonic() + BACKOFF_S
-        logger.error("Upload failed %d times, entering BACKOFF", MAX_UPLOAD_RETRIES)
-        return False
 
     def shutdown(self) -> None:
         self.telemetry.unbind()
