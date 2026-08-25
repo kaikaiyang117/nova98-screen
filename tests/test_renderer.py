@@ -19,11 +19,14 @@ def test_render_not_all_black():
     assert colors and len(colors) > 5
 
 
-def test_static_state_has_no_dynamic_fields():
-    # Guard: dynamic metrics must never enter the static channel.
+def test_static_state_carries_framebuffer_channel_fields():
+    # Native cmd-52 telemetry renders nothing on NOVA98, so CPU/temp ride the
+    # static channel; GPU fields must stay out (no data source on macOS).
     fields = set(StaticDisplayState.__dataclass_fields__)
-    forbidden = {"cpu_percent", "cpu_temperature", "gpu_percent", "gpu_temperature", "timestamp"}
-    assert not (fields & forbidden)
+    assert "cpu_percent" in fields
+    assert "cpu_temperature" in fields
+    assert "gpu_percent" not in fields
+    assert "timestamp" not in fields
 
 
 def test_render_hides_none_rows():

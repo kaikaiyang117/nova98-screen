@@ -15,6 +15,8 @@ from nova98.renderer.state import StaticDisplayState
 @dataclass(frozen=True)
 class StaticThresholds:
     memory: float = 5.0
+    cpu: float = 10.0
+    temperature: float = 3.0
     network_tier_bytes: float = 512 * 1024  # rate changes across tier boundaries
 
 
@@ -38,6 +40,10 @@ class StaticChangeDetector:
         t = self.thresholds
         return (
             self._moved(last_committed.memory_percent, current.memory_percent, t.memory)
+            or self._moved(last_committed.cpu_percent, current.cpu_percent, t.cpu)
+            or self._moved(
+                last_committed.cpu_temperature, current.cpu_temperature, t.temperature
+            )
             or self._tier(last_committed.download_bytes_per_sec)
             != self._tier(current.download_bytes_per_sec)
             or self._tier(last_committed.upload_bytes_per_sec)

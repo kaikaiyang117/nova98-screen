@@ -67,12 +67,17 @@ def make_controller(monkeypatch, min_interval=30.0, force_interval=300.0):
     return controller, clock
 
 
-def test_cpu_change_does_not_trigger_static_frame(monkeypatch):
-    controller, _ = make_controller(monkeypatch)
-    first = controller.update(state())
-    assert first is not None
-    controller.mark_uploaded(state())
-    # CPU is not part of StaticDisplayState at all; nothing to feed it with.
+def test_cpu_change_triggers_static_frame_after_interval(monkeypatch):
+    # cmd 52 telemetry renders nothing on NOVA98 firmware, so CPU rides the
+    # static channel again and must be change-detected.
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+    displayed = state(cpu_percent=50.0)
+    assert controller.update(displayed) is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 31
+    assert controller.update(state(cpu_percent=55.0)) is None   # +5 < threshold 10
+    assert controller.update(state(cpu_percent=65.0)) is not None  # vs committed 50
 
 
 def test_minute_change_does_not_trigger_static_frame(monkeypatch):

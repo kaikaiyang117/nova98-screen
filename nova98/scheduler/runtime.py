@@ -112,7 +112,11 @@ class StaticFrameController:
             force_interval=config.static_display.force_interval,
         )
         self.detector = StaticChangeDetector(
-            thresholds=StaticThresholds(memory=config.thresholds.memory)
+            thresholds=StaticThresholds(
+                memory=config.thresholds.memory,
+                cpu=config.thresholds.cpu,
+                temperature=config.thresholds.temperature,
+            )
         )
         self._last_committed_state: StaticDisplayState | None = None
         self._last_frame_hash: str | None = None

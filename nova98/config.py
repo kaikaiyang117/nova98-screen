@@ -32,7 +32,9 @@ class ThresholdsConfig:
 
 @dataclass
 class TelemetryConfig:
-    enabled: bool = True
+    # Default OFF: NOVA98 firmware ACKs cmd 52 but renders nothing
+    # (docs/native-telemetry.md). Keep for future firmware / other models.
+    enabled: bool = False
     interval: float = 1.0
     force_interval: float = 5.0
     thresholds: dict = field(default_factory=lambda: {"cpu": 1, "gpu": 1, "temperature": 1})
@@ -91,7 +93,7 @@ class Config:
         telemetry = raw.get("telemetry") or {}
         tel_thresholds = telemetry.get("thresholds") or {}
         config.telemetry = TelemetryConfig(
-            enabled=bool(telemetry.get("enabled", True)),
+            enabled=bool(telemetry.get("enabled", False)),
             interval=float(telemetry.get("interval", 1)),
             force_interval=float(telemetry.get("force_interval", 5)),
             thresholds={
