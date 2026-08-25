@@ -10,8 +10,10 @@ import yaml
 
 @dataclass
 class RefreshConfig:
-    min_interval: float = 30.0
-    force_interval: float = 300.0
+    # Conservative: every dynamic value rides flash-backed cmd 80 frames,
+    # so 60s min / 30min re-evaluation keeps wear negligible.
+    min_interval: float = 60.0
+    force_interval: float = 1800.0
 
 
 @dataclass
@@ -32,8 +34,6 @@ class ThresholdsConfig:
 
 @dataclass
 class TelemetryConfig:
-    # Default OFF: NOVA98 firmware ACKs cmd 52 but renders nothing
-    # (docs/native-telemetry.md). Keep for future firmware / other models.
     enabled: bool = False
     interval: float = 1.0
     force_interval: float = 5.0

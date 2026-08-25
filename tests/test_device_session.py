@@ -51,7 +51,7 @@ def test_static_controller_respects_min_interval(monkeypatch):
     # Inside min interval: nothing.
     assert controller.update(state(90)) is None
 
-    clock["t"] += 31
+    clock["t"] += 61
     # Outside interval but below change threshold (5): no update.
     assert controller.update(state(53)) is None
     # Big jump vs committed 50: renders again.

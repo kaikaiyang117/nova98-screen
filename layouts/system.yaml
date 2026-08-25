@@ -1,8 +1,8 @@
 display:
 
   refresh:
-    min_interval: 30
-    force_interval: 300
+    min_interval: 60
+    force_interval: 1800
 
 metrics:
 
@@ -22,7 +22,7 @@ thresholds:
 
 telemetry:
 
-  enabled: true
+  enabled: false
 
   interval: 1.0
 

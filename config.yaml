@@ -1,14 +1,15 @@
 display:
 
   refresh:
-    min_interval: 30
-    force_interval: 300
+    min_interval: 60
+    force_interval: 1800
 
 metrics:
 
   cpu: true
   memory: true
   temperature: true
+  gpu: true
   network: true
 
 thresholds:
@@ -18,6 +19,22 @@ thresholds:
   memory: 5
 
   temperature: 3
+
+# Experimental only.
+# NOVA98 acknowledges cmd 52 but does not render telemetry.
+telemetry:
+
+  enabled: false
+
+  interval: 1.0
+
+  force_interval: 5.0
+
+  thresholds:
+
+    cpu: 1
+    gpu: 1
+    temperature: 1
 
 layout:
 
