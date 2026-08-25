@@ -74,14 +74,13 @@ class TelemetryController:
     """Experimental cmd 52 channel.
 
     Protocol is valid (55 34 ACK), but NOVA98 firmware currently does not
-    render the supplied values. Disabled by default; retained for future
-    firmware and other AULA models.
+    render the supplied values. The runtime only creates this controller when
+    telemetry is enabled in config — existence IS the enabled state.
     """
 
     def __init__(self, scheduler):
         self.scheduler = scheduler
         self._sender: TelemetrySender | None = None
-        self.enabled = True
 
     def bind(self, hid_dev: Nova98Hid) -> None:
         if self._sender is None or self._sender.device is not hid_dev:
@@ -92,7 +91,7 @@ class TelemetryController:
         self._sender = None
 
     def update(self, status: TelemetryStatus) -> bool:
-        if not self.enabled or self._sender is None:
+        if self._sender is None:
             return False
         if not self.scheduler.should_send(status):
             return False
@@ -195,11 +194,6 @@ class StaticFrameController:
         self._last_frame_hash = digest
         self.limiter.mark_updated()
 
-    def _commit(self, state: StaticDisplayState, digest: str) -> None:
-        self._last_committed_state = state
-        self._last_frame_hash = digest
-        self.limiter.mark_updated()
-
 
 class ScreenRuntime:
     states = ("CONNECTED", "DISCONNECTED", "RECONNECTING", "BACKOFF")
@@ -242,9 +236,11 @@ class ScreenRuntime:
             self._state = "RECONNECTING"
             return False
         self._state = "CONNECTED"
-        from nova98.display.backend import FlashFramebufferBackend
+        # Backend lives as long as the current HID session.
+        if self._backend is None:
+            from nova98.display.backend import FlashFramebufferBackend
 
-        self._backend = FlashFramebufferBackend(self.session.device)
+            self._backend = FlashFramebufferBackend(self.session.device)
 
         # Experimental telemetry first: skipped entirely when disabled.
         uploaded = False
@@ -308,3 +304,4 @@ class ScreenRuntime:
         if self.telemetry is not None:
             self.telemetry.unbind()
         self.session.disconnect()
+        self._backend = None
