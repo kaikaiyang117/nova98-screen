@@ -82,21 +82,48 @@ def test_telemetry_controller_skips_and_sends():
     assert len(sent) == 1
 
 
-def test_runtime_disabled_telemetry_sends_nothing(monkeypatch):
+def test_runtime_disabled_telemetry_not_initialized():
     config = Config()
     config.telemetry.enabled = False
     runtime = ScreenRuntime(config)
+    assert runtime.telemetry is None
 
-    uploads = []
-    monkeypatch.setattr(
-        "nova98.display.uploader.upload_single_frame",
-        lambda image, dev: uploads.append(image) or __import__("types").SimpleNamespace(pages=16, acks=16, duration_s=1),
+
+def test_runtime_enabled_telemetry_is_initialized():
+    config = Config()
+    config.telemetry.enabled = True
+    runtime = ScreenRuntime(config)
+    assert runtime.telemetry is not None
+
+
+def test_runtime_telemetry_refusing_send_disconnects(monkeypatch):
+    """A telemetry transport error must tear down the session, not crash."""
+    from nova98.telemetry.sender import TelemetryTransportError
+
+    config = Config()
+    config.telemetry.enabled = True
+    runtime = ScreenRuntime(config)
+    runtime.telemetry.update = lambda status: (_ for _ in ()).throw(
+        TelemetryTransportError("gone")
     )
+
+    disconnects = []
+
+    class FakeHid:
+        profile = None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runtime.session, "_hid", FakeHid())
     monkeypatch.setattr(runtime.session, "ensure_connected", lambda: True)
-    monkeypatch.setattr(runtime, "_upload_with_retry", lambda image: True)
+    monkeypatch.setattr(runtime.session, "disconnect", lambda: disconnects.append(1))
+    monkeypatch.setattr(runtime, "_upload_with_retry", lambda state: False)
 
     metrics = SystemMetrics(cpu_percent=50, timestamp=datetime(2026, 1, 1))
-    runtime.tick(metrics)  # must not raise despite no real device
+    assert runtime.tick(metrics) is False
+    assert runtime.state == "DISCONNECTED"
+    assert disconnects == [1]
 
 
 def test_backoff_closes_and_reopens_hid(monkeypatch):
@@ -119,6 +146,13 @@ def test_backoff_closes_and_reopens_hid(monkeypatch):
 
     # Force a failing upload into backoff.
     monkeypatch.setattr(runtime.session, "_hid", FakeHidDev())
+    from nova98.display.uploader import UploadResult
+
+    class FailingBackend:
+        def show(self, image):
+            raise OSError("wire gone")
+
+    runtime._backend = FailingBackend()
     sleeps = []
     monkeypatch.setattr("nova98.scheduler.runtime.time.sleep", lambda s: sleeps.append(s))
 
@@ -130,12 +164,35 @@ def test_backoff_closes_and_reopens_hid(monkeypatch):
 
     assert runtime.state == "BACKOFF"
     assert not runtime.session.connected  # handle released, will re-enumerate
-    assert runtime.telemetry._sender is None
 
 
 def test_backoff_exits_via_reconnect(monkeypatch):
+    import types
+
     runtime = ScreenRuntime(Config())
-    runtime.telemetry.enabled = False
+    assert runtime.telemetry is None  # disabled by default: never initialized
+
+    class IdleHid:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runtime.session, "_hid", IdleHid())
+
+    import nova98.display.backend as backend_mod
+
+    class SuccessBackend:
+        def __init__(self, hid):
+            pass
+
+        def show(self, image):
+            return types.SimpleNamespace(pages=16, acks=16, duration_s=1.0)
+
+    monkeypatch.setattr(backend_mod, "FlashFramebufferBackend", SuccessBackend)
+
+    class SuccessBackendUnused:
+        def show(self, image):
+            self.shown = image
+            return types.SimpleNamespace(pages=16, acks=16, duration_s=1.0)
 
     connect_attempts = {"n": 0}
 
@@ -160,5 +217,7 @@ def test_backoff_exits_via_reconnect(monkeypatch):
     assert runtime.tick(metrics) is False
     assert runtime.state == "RECONNECTING"
     assert connect_attempts["n"] == 1
-    assert runtime.tick(metrics) is False
+    # Attempt 2 connects; forced initial static frame uploads.
+    assert runtime.tick(metrics) is True
+    assert runtime.state == "CONNECTED"
     assert connect_attempts["n"] == 2

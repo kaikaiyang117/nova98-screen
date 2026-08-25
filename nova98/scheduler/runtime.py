@@ -193,17 +193,22 @@ class ScreenRuntime:
         self.config = config
         self.session = DeviceSession()
         self.static = StaticFrameController(config)
-        self.telemetry = TelemetryController(
-            telemetry_scheduler
-            or TelemetryScheduler(
-                interval_s=config.telemetry.interval,
-                force_interval_s=config.telemetry.force_interval,
-                cpu_delta=config.telemetry.thresholds.get("cpu", 1),
-                gpu_delta=config.telemetry.thresholds.get("gpu", 1),
-                temperature_delta=config.telemetry.thresholds.get("temperature", 1),
+        # Experimental channel is not initialized at all when disabled.
+        self.telemetry: TelemetryController | None = (
+            TelemetryController(
+                telemetry_scheduler
+                or TelemetryScheduler(
+                    interval_s=config.telemetry.interval,
+                    force_interval_s=config.telemetry.force_interval,
+                    cpu_delta=config.telemetry.thresholds.get("cpu", 1),
+                    gpu_delta=config.telemetry.thresholds.get("gpu", 1),
+                    temperature_delta=config.telemetry.thresholds.get("temperature", 1),
+                )
             )
+            if config.telemetry.enabled
+            else None
         )
-        self.telemetry.enabled = config.telemetry.enabled
+        self._backend = None
         self._state = "DISCONNECTED"
         self._backoff_until = 0.0
 
@@ -222,19 +227,21 @@ class ScreenRuntime:
             self._state = "RECONNECTING"
             return False
         self._state = "CONNECTED"
-        if self.telemetry.enabled:
-            self.telemetry.bind(self.session.device)
+        from nova98.display.backend import FlashFramebufferBackend
 
-        # Experimental telemetry first: cheap no-op unless enabled.
+        self._backend = FlashFramebufferBackend(self.session.device)
+
+        # Experimental telemetry first: skipped entirely when disabled.
         uploaded = False
-        try:
-            self.telemetry.update(metrics_to_telemetry(metrics))
-        except (TelemetryTransportError, HidError, OSError) as exc:
-            logger.warning("Telemetry channel error: %s", exc)
-            self.session.disconnect()
-            self.telemetry.unbind()
-            self._state = "DISCONNECTED"
-            return False
+        if self.telemetry is not None:
+            try:
+                self.telemetry.update(metrics_to_telemetry(metrics))
+            except (TelemetryTransportError, HidError, OSError) as exc:
+                logger.warning("Telemetry channel error: %s", exc)
+                self.session.disconnect()
+                self.telemetry.unbind()
+                self._state = "DISCONNECTED"
+                return False
 
         # Active display path: throttled framebuffer upload.
         try:
@@ -245,16 +252,17 @@ class ScreenRuntime:
         except (HidError, OSError) as exc:
             logger.warning("Static channel error: %s", exc)
             self.session.disconnect()
-            self.telemetry.unbind()
+            if self.telemetry is not None:
+                self.telemetry.unbind()
             self._state = "DISCONNECTED"
         return uploaded
 
     def _upload_with_retry(self, state: StaticDisplayState) -> bool:
-        from nova98.display.uploader import SafetyError, upload_single_frame
+        from nova98.display.uploader import SafetyError
 
         for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
             try:
-                upload_single_frame(render(state), self.session.device)
+                self._backend.show(render(state))
                 self.static.mark_uploaded(state)
                 logger.info("Upload attempt %d ok", attempt)
                 return True
@@ -273,11 +281,13 @@ class ScreenRuntime:
 
     def _enter_backoff(self) -> None:
         """Close the HID handle so BACKOFF recovery re-enumerates and reopens."""
-        self.telemetry.unbind()
+        if self.telemetry is not None:
+            self.telemetry.unbind()
         self.session.disconnect()
         self._state = "BACKOFF"
         self._backoff_until = time.monotonic() + BACKOFF_S
 
     def shutdown(self) -> None:
-        self.telemetry.unbind()
+        if self.telemetry is not None:
+            self.telemetry.unbind()
         self.session.disconnect()
