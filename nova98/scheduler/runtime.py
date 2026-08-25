@@ -76,7 +76,7 @@ class TelemetryController:
         self.enabled = True
 
     def bind(self, hid_dev: Nova98Hid) -> None:
-        if self._sender is None or self._sender._hid is not hid_dev:
+        if self._sender is None or self._sender.device is not hid_dev:
             self._sender = TelemetrySender(hid_dev)
             self.scheduler.reset()
 
@@ -93,7 +93,8 @@ class TelemetryController:
         except TelemetryTransportError as exc:
             logger.warning("Telemetry send failed: %s", exc)
             raise
-        self.scheduler.mark_sent()
+        # Commit scheduler state only after a successful send.
+        self.scheduler.mark_sent(status)
         return True
 
 

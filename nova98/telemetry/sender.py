@@ -19,6 +19,11 @@ class TelemetrySender:
     def __init__(self, hid_device: Nova98Hid):
         self._hid = hid_device
 
+    @property
+    def device(self) -> Nova98Hid:
+        """Read-only access to the bound HID device (identity checks)."""
+        return self._hid
+
     def send(self, status: TelemetryStatus) -> None:
         payload = encode_system_status(status)
         try:

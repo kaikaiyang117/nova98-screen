@@ -1,4 +1,10 @@
-"""Telemetry scheduler: fast-path decision for cmd 52 updates."""
+"""Telemetry scheduler: fast-path decision for cmd 52 updates.
+
+Semantics:
+- should_send() is a PURE decision; it never mutates state.
+- mark_sent(status) commits state ONLY after a successful HID send.
+- interval_s is a hard min-interval; force_interval_s forces periodic sync.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +12,8 @@ import time
 
 from nova98.telemetry.model import TelemetryStatus
 
-DEFAULT_THRESHOLDS = {"cpu": 1, "gpu": 1, "temperature": 1}
-
 
 class TelemetryScheduler:
-    """Send telemetry when a rounded field moved beyond its delta,
-    or at most `force_interval_s` since the last send."""
-
     def __init__(
         self,
         interval_s: float = 1.0,
@@ -23,6 +24,8 @@ class TelemetryScheduler:
     ):
         if interval_s <= 0:
             raise ValueError("interval_s must be positive")
+        if force_interval_s < interval_s:
+            raise ValueError("force_interval_s must be >= interval_s")
         self.interval_s = interval_s
         self.force_interval_s = force_interval_s
         self.cpu_delta = cpu_delta
@@ -36,24 +39,21 @@ class TelemetryScheduler:
         self._last_sent = None
 
     def should_send(self, status: TelemetryStatus) -> bool:
+        """Pure check against the last COMMITTED (successfully sent) status."""
         now = time.monotonic()
-        if self._last is None or self._last_sent is None:
-            return self._mark(status, now)
+        if self._last_sent is not None:
+            elapsed = now - self._last_sent
+            if elapsed < self.interval_s:
+                return False
+            if elapsed >= self.force_interval_s:
+                return True
+        # First send ever, or meaningful change vs committed baseline.
+        return self._last is None or self._moved_beyond_threshold(self._last, status)
 
-        if (now - self._last_sent) >= self.force_interval_s:
-            return self._mark(status, now)
-
-        if self._moved_beyond_threshold(self._last, status):
-            return self._mark(status, now)
-        return False
-
-    def mark_sent(self) -> None:
-        self._last_sent = time.monotonic()
-
-    def _mark(self, status: TelemetryStatus, now: float) -> bool:
+    def mark_sent(self, status: TelemetryStatus) -> None:
+        """Commit AFTER the HID send succeeded."""
         self._last = status
-        self._last_sent = now
-        return True
+        self._last_sent = time.monotonic()
 
     def _moved_beyond_threshold(self, old: TelemetryStatus, new: TelemetryStatus) -> bool:
         return (
