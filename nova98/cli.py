@@ -208,7 +208,9 @@ def main(argv: list[str] | None = None) -> int:
     p_metrics.add_argument("--config", default="config.yaml")
     p_metrics.set_defaults(func=cmd_metrics)
 
-    p_tel = sub.add_parser("telemetry", help="show native telemetry values")
+    p_tel = sub.add_parser(
+        "telemetry", help="show experimental cmd 52 values (NOVA98 does not render them)"
+    )
     p_tel.add_argument("--config", default="config.yaml")
     p_tel.set_defaults(func=cmd_telemetry)
 
@@ -221,12 +223,16 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("--config", default="config.yaml")
     p_show.set_defaults(func=cmd_show)
 
-    p_run = sub.add_parser("run", help="dual-channel background runtime")
+    p_run = sub.add_parser("run", help="background monitoring runtime")
     p_run.add_argument("--config", default="config.yaml")
     p_run.set_defaults(func=cmd_run)
 
     p_ttest = sub.add_parser(
-        "telemetry-test", help="send one cmd 52 telemetry status (single shot)"
+        "telemetry-test",
+        help=(
+            "experimental protocol diagnostics: send one cmd 52 payload. "
+            "NOVA98 currently ACKs but does not render it."
+        ),
     )
     for name in (
         "--cpu", "--cpu-temp", "--gpu", "--gpu-temp", "--current-temp",
