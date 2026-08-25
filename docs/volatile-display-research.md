@@ -2,7 +2,15 @@
 
 研究目标：确认 NOVA98 是否存在 RAM-only / 不写 SPI Flash 的实时显示通道。
 
-结论：**不存在。** 项目正式定位为 low-frequency keyboard status display。
+结论：**截至当前逆向范围，未在 AULA HUB 实际使用的 HID 协议、已分析的
+SDK 命令集和全部前端调用路径中，发现 NOVA98 可用的 RAM-only /
+volatile TFT display channel。**
+
+注意区分两个层次：
+- 逆向证据 ≠ 固件层面的绝对证明（可能存在文档/前端均未覆盖的
+  undocumented 命令）；
+- 因此工程实现按「当前无可用易失性显示通道」处理，
+  项目正式定位为 low-frequency keyboard status display。
 
 ## 研究方法
 
@@ -47,7 +55,7 @@ NOVA98 显示通道清单：
   cmd 52  clock        → 需官方编辑器时钟控件   （不适用于自绘帧）
   cmd 52  system info  → 固件不渲染            ❌
   cmd 81  built-in page→ 固件不响应            ❌
-  RAM/volatile channel → 协议中不存在          ❌
+  RAM/volatile channel → 当前协议/HUB 中未发现可用实现 ⚠️
 ```
 
 因此本项目定位为 **low-frequency keyboard status display**：

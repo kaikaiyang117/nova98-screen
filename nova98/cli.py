@@ -278,7 +278,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clock = sub.add_parser(
         "time-sync",
-        help="sync keyboard clock via cmd 52 (official HUB timeCheck equivalent)",
+        help=(
+            "experimental clock sync via cmd 52 (official HUB timeCheck "
+            "equivalent). Visible only on firmware-supported clock widgets; "
+            "a self-drawn dashboard shows nothing."
+        ),
     )
     p_clock.add_argument("--dry-run", action="store_true", help="print payload only")
     p_clock.set_defaults(func=cmd_time_sync)
