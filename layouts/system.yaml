@@ -9,7 +9,7 @@ metrics:
   cpu: true
   memory: true
   temperature: true
-  gpu: true
+  gpu: false
   network: true
 
 thresholds:
