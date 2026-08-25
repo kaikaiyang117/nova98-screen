@@ -222,3 +222,48 @@ def test_config_validation_accepts_valid_file(tmp_path):
     )
     config = Config.load(cfg)  # must not raise
     assert config.refresh.min_interval == 60
+
+
+# --- Config default unification (v0.1.0) -------------------------------------
+
+
+def test_missing_config_uses_dataclass_defaults(tmp_path):
+    from nova98.config import Config
+
+    config = Config.load(tmp_path / "nonexistent.yaml")
+    assert config.refresh.min_interval == 60
+    assert config.refresh.force_interval == 1800
+    assert config.metrics.gpu is False
+    assert config.telemetry.enabled is False
+
+
+def test_empty_yaml_gets_full_defaults(tmp_path):
+    from nova98.config import Config
+
+    cfg = tmp_path / "empty.yaml"
+    cfg.write_text("{}\n")
+    config = Config.load(cfg)
+    assert config == Config()
+
+
+def test_partial_metrics_config_preserves_defaults(tmp_path):
+    from nova98.config import Config
+
+    cfg = tmp_path / "partial.yaml"
+    cfg.write_text("metrics:\n  cpu: false\n")
+    m = Config.load(cfg).metrics
+    assert m.cpu is False
+    assert m.memory is True
+    assert m.temperature is True
+    assert m.gpu is False
+    assert m.network is True
+
+
+def test_partial_refresh_preserves_force_default(tmp_path):
+    from nova98.config import Config
+
+    cfg = tmp_path / "refresh.yaml"
+    cfg.write_text("display:\n  refresh:\n    min_interval: 120\n")
+    r = Config.load(cfg).refresh
+    assert r.min_interval == 120
+    assert r.force_interval == 1800

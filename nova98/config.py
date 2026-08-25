@@ -63,50 +63,55 @@ class Config:
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
+        # Single source of truth for defaults: the dataclasses themselves.
+        # load() must never restate a magic number.
+        defaults = cls()
         config = cls()
-        if path is None:
-            path = Path("config.yaml")
-            if not path.exists():
-                return config
-        path = Path(path)
-        if not path.exists():
-            return config
-        raw = yaml.safe_load(path.read_text()) or {}
+        if path is not None:
+            path = Path(path)
+            if path.exists():
+                raw = yaml.safe_load(path.read_text()) or {}
+            else:
+                raw = {}
+        else:
+            default_path = Path("config.yaml")
+            raw = yaml.safe_load(default_path.read_text()) or {} if default_path.exists() else {}
+
+        d = defaults
         display = raw.get("display") or {}
         static_display = raw.get("static_display") or display
         refresh = static_display.get("refresh") or {}
         config.refresh = RefreshConfig(
-            min_interval=float(refresh.get("min_interval", 30)),
-            force_interval=float(refresh.get("force_interval", 300)),
+            min_interval=float(refresh.get("min_interval", d.refresh.min_interval)),
+            force_interval=float(refresh.get("force_interval", d.refresh.force_interval)),
         )
         metrics_raw = raw.get("metrics") or {}
         config.metrics = MetricsConfig(
-            cpu=bool(metrics_raw.get("cpu", True)),
-            memory=bool(metrics_raw.get("memory", True)),
-            temperature=bool(metrics_raw.get("temperature", True)),
-            gpu=bool(metrics_raw.get("gpu", True)),
-            network=bool(metrics_raw.get("network", True)),
+            cpu=bool(metrics_raw.get("cpu", d.metrics.cpu)),
+            memory=bool(metrics_raw.get("memory", d.metrics.memory)),
+            temperature=bool(metrics_raw.get("temperature", d.metrics.temperature)),
+            gpu=bool(metrics_raw.get("gpu", d.metrics.gpu)),
+            network=bool(metrics_raw.get("network", d.metrics.network)),
         )
         thresholds = raw.get("thresholds") or {}
         config.thresholds = ThresholdsConfig(
-            cpu=float(thresholds.get("cpu", 10)),
-            memory=float(thresholds.get("memory", 5)),
-            temperature=float(thresholds.get("temperature", 3)),
+            cpu=float(thresholds.get("cpu", d.thresholds.cpu)),
+            memory=float(thresholds.get("memory", d.thresholds.memory)),
+            temperature=float(thresholds.get("temperature", d.thresholds.temperature)),
         )
         telemetry = raw.get("telemetry") or {}
         tel_thresholds = telemetry.get("thresholds") or {}
         config.telemetry = TelemetryConfig(
-            enabled=bool(telemetry.get("enabled", False)),
-            interval=float(telemetry.get("interval", 1)),
-            force_interval=float(telemetry.get("force_interval", 5)),
+            enabled=bool(telemetry.get("enabled", d.telemetry.enabled)),
+            interval=float(telemetry.get("interval", d.telemetry.interval)),
+            force_interval=float(telemetry.get("force_interval", d.telemetry.force_interval)),
             thresholds={
-                "cpu": int(tel_thresholds.get("cpu", 1)),
-                "gpu": int(tel_thresholds.get("gpu", 1)),
-                "temperature": int(tel_thresholds.get("temperature", 1)),
+                key: int(tel_thresholds.get(key, value))
+                for key, value in d.telemetry.thresholds.items()
             },
         )
         layout = raw.get("layout") or {}
-        config.layout = LayoutConfig(name=str(layout.get("name", "system")))
+        config.layout = LayoutConfig(name=str(layout.get("name", d.layout.name)))
         config.validate()
         return config
 
