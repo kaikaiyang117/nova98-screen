@@ -13,7 +13,8 @@ from nova98.device.profiles import NOVA98
 from nova98.display.framebuffer import build_frame_buffer
 from nova98.metrics.base import SystemMetrics
 from nova98.renderer.renderer import render
-from nova98.scheduler.change_detector import ChangeDetector, Thresholds
+from nova98.renderer.state import StaticDisplayState, static_display_state
+from nova98.scheduler.change_detector import StaticChangeDetector, StaticThresholds
 from nova98.scheduler.refresh import RefreshLimiter
 from nova98.scheduler.telemetry import TelemetryScheduler
 from nova98.telemetry.mapper import metrics_to_telemetry
@@ -97,48 +98,57 @@ class TelemetryController:
 
 
 class StaticFrameController:
-    """SLOW PATH: full dashboard frame, throttled flash writes."""
+    """SLOW PATH: RAM / network / layout only, throttled flash writes.
+
+    Change detection is relative to `_last_committed_state` — the last state
+    successfully displayed on screen — so slow drift accumulates instead of
+    being swallowed. The baseline only advances after a successful upload.
+    """
 
     def __init__(self, config: Config):
         self.limiter = RefreshLimiter(
             min_interval=config.static_display.min_interval,
             force_interval=config.static_display.force_interval,
         )
-        self.detector = ChangeDetector(
-            thresholds=Thresholds(
-                cpu=config.thresholds.cpu,
-                memory=config.thresholds.memory,
-                temperature=config.thresholds.temperature,
-            )
+        self.detector = StaticChangeDetector(
+            thresholds=StaticThresholds(memory=config.thresholds.memory)
         )
+        self._last_committed_state: StaticDisplayState | None = None
         self._last_frame_hash: str | None = None
+        self._pending_reason = "manual"
 
-    def update(self, metrics: SystemMetrics) -> Image.Image | None:
-        if self.limiter.must_force():
-            reason = "forced"
-        elif not self.limiter.allow():
+    def update(self, state: StaticDisplayState) -> Image.Image | None:
+        forced = self.limiter.must_force()
+        if not forced and not self.limiter.allow():
             logger.debug("Frame skipped: min interval not reached")
             return None
 
-        if not self.detector.significant_change(metrics):
+        changed = self.detector.changed(self._last_committed_state, state)
+        if not forced and not changed:
             logger.debug("Frame skipped: no significant change")
             return None
-        reason = "changed"
 
-        image = render(metrics)
+        image = render(state)
         digest = build_frame_buffer(image, NOVA98).sha256
-        if digest == self._last_frame_hash:
-            logger.info("Frame skipped: identical hash")
-            self.limiter.mark_updated()
+        if not forced and digest == self._last_frame_hash:
+            # Screen already shows exactly this content; commit silently.
+            self._commit(state, digest)
+            logger.info("Frame skipped: identical hash (state committed)")
             return None
-        self._pending_reason = reason
-        self._last_rendered_hash = digest
+
+        self._pending_reason = "forced" if forced else "changed"
         return image
 
-    def mark_uploaded(self, image: Image.Image) -> None:
-        self._last_frame_hash = build_frame_buffer(image, NOVA98).sha256
+    def mark_uploaded(self, state: StaticDisplayState) -> None:
+        """Commit baseline ONLY after a successful upload."""
+        digest = build_frame_buffer(render(state), NOVA98).sha256
+        self._commit(state, digest)
+        logger.info("Screen updated (%s)", self._pending_reason)
+
+    def _commit(self, state: StaticDisplayState, digest: str) -> None:
+        self._last_committed_state = state
+        self._last_frame_hash = digest
         self.limiter.mark_updated()
-        logger.info("Screen updated (%s)", getattr(self, "_pending_reason", "manual"))
 
 
 class ScreenRuntime:
@@ -191,9 +201,9 @@ class ScreenRuntime:
             self._state = "DISCONNECTED"
             return False
 
-        # SLOW PATH: expensive framebuffer upload.
+        # SLOW PATH: expensive framebuffer upload, static data only.
         try:
-            image = self.static.update(metrics)
+            image = self.static.update(static_display_state(metrics))
             if image is not None:
                 uploaded = self._upload_with_retry(image)
         except (HidError, OSError) as exc:
@@ -203,13 +213,13 @@ class ScreenRuntime:
             self._state = "DISCONNECTED"
         return uploaded
 
-    def _upload_with_retry(self, image: Image.Image) -> bool:
+    def _upload_with_retry(self, state: StaticDisplayState) -> bool:
         from nova98.display.uploader import SafetyError, upload_single_frame
 
         for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
             try:
-                upload_single_frame(image, self.session.device)
-                self.static.mark_uploaded(image)
+                upload_single_frame(render(state), self.session.device)
+                self.static.mark_uploaded(state)
                 logger.info("Upload attempt %d ok", attempt)
                 return True
             except SafetyError:

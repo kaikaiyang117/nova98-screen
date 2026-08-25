@@ -1,110 +1,132 @@
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from nova98.config import Config
-from nova98.metrics.base import SystemMetrics
-from nova98.scheduler.change_detector import ChangeDetector, Thresholds
-from nova98.scheduler.refresh import RefreshLimiter
+from nova98.renderer.state import StaticDisplayState
+from nova98.scheduler.change_detector import StaticChangeDetector, StaticThresholds
 
 
-def metrics(**kw) -> SystemMetrics:
+def state(**kw) -> StaticDisplayState:
     defaults = dict(
-        cpu_percent=50.0,
         memory_percent=60.0,
-        cpu_temperature=55.0,
         download_bytes_per_sec=100_000.0,
         upload_bytes_per_sec=50_000.0,
-        timestamp=datetime.now(),
     )
     defaults.update(kw)
-    return SystemMetrics(**defaults)
+    return StaticDisplayState(**defaults)
 
 
-def feed(detector: ChangeDetector, **kw) -> bool:
-    kw.setdefault("timestamp", datetime(2026, 1, 1, 12, 0, 0))
-    return detector.significant_change(metrics(**kw))
+def test_first_comparison_always_changed():
+    detector = StaticChangeDetector()
+    assert detector.changed(None, state()) is True
 
 
-def test_change_detector_first_call_always_changes():
-    detector = ChangeDetector()
-    assert feed(detector) is True
+def test_only_static_fields_detected():
+    detector = StaticChangeDetector()
+    assert detector.changed(state(memory_percent=50), state(memory_percent=50)) is False
 
 
-def test_change_detector_thresholds():
-    detector = ChangeDetector(thresholds=Thresholds(cpu=10, memory=5, temperature=3))
-    assert feed(detector, cpu_percent=55.0) is True  # initial
-
-    # Carry-forward state so only one field moves at a time.
-    state: dict = {}
-    def step(**kw) -> bool:
-        state.update(kw)
-        return feed(detector, **state)
-
-    assert step(cpu_percent=63.0) is False   # +8 < 10
-    assert step(cpu_percent=74.0) is True    # +11 >= 10
-    assert step(memory_percent=64.0) is False
-    assert step(memory_percent=70.0) is True
-    assert step(cpu_temperature=57.5) is False
-    assert step(cpu_temperature=61.0) is True
-    # None appearing/disappearing counts as change.
-    assert step(cpu_temperature=None) is True
-    assert step(cpu_temperature=60.0) is True
+def test_memory_threshold_relative_to_committed():
+    detector = StaticChangeDetector(thresholds=StaticThresholds(memory=5.0))
+    committed = state(memory_percent=50)
+    assert detector.changed(committed, state(memory_percent=54)) is False
+    # Drift: still relative to committed 50, not the previous sample.
+    assert detector.changed(committed, state(memory_percent=58)) is True
+    assert detector.changed(committed, state(memory_percent=45)) is True
+    assert detector.changed(committed, state(memory_percent=46)) is False
 
 
-def test_network_tier_and_minute_triggers():
-    detector = ChangeDetector()
-    assert feed(detector, download_bytes_per_sec=100_000.0) is True
-    assert feed(detector, download_bytes_per_sec=300_000.0) is False
-    assert feed(detector, download_bytes_per_sec=700_000.0) is True
-    future = metrics(timestamp=datetime.now() + timedelta(minutes=2), download_bytes_per_sec=700_000.0)
-    assert detector.significant_change(future) is True
+def test_none_appearing_counts_as_change():
+    detector = StaticChangeDetector()
+    assert detector.changed(state(memory_percent=50), state(memory_percent=None)) is True
+    assert detector.changed(state(memory_percent=None), state(memory_percent=50)) is True
 
 
-def test_refresh_limiter_intervals():
-    limiter = RefreshLimiter(min_interval=30, force_interval=300)
-    assert limiter.allow() and limiter.must_force()  # never updated yet
-
-    limiter.mark_updated()
-    assert not limiter.allow()
-    assert not limiter.must_force()
-
-    limiter._last_update -= 31  # simulate elapsed time
-    assert limiter.allow()
-    assert not limiter.must_force()
-
-    limiter._last_update -= 300
-    assert limiter.must_force()
+def test_network_tiers():
+    detector = StaticChangeDetector()
+    committed = state(download_bytes_per_sec=100_000.0)
+    assert detector.changed(committed, state(download_bytes_per_sec=300_000.0)) is False
+    assert detector.changed(committed, state(download_bytes_per_sec=700_000.0)) is True
 
 
-def test_config_parser(tmp_path):
-    cfg_file = tmp_path / "config.yaml"
-    cfg_file.write_text(
-        """
-display:
-  refresh:
-    min_interval: 45
-    force_interval: 600
-metrics:
-  cpu: true
-  temperature: false
-thresholds:
-  cpu: 15
-layout:
-  name: compact
-"""
-    )
-    config = Config.load(cfg_file)
-    assert config.refresh.min_interval == 45
-    assert config.refresh.force_interval == 600
-    assert config.metrics.temperature is False
-    assert config.thresholds.cpu == 15
-    assert config.layout.name == "compact"
+# --- StaticFrameController integration --------------------------------------
 
 
-def test_config_defaults_when_missing(tmp_path):
-    config = Config.load(tmp_path / "nonexistent.yaml")
-    assert config.refresh.min_interval == 30
-    assert config.thresholds.memory == 5
+def make_controller(monkeypatch, min_interval=30.0, force_interval=300.0):
+    from nova98.scheduler.runtime import StaticFrameController
+
+    config = Config()
+    config.refresh = type(config.refresh)(min_interval=min_interval, force_interval=force_interval)
+    controller = StaticFrameController(config)
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("nova98.scheduler.runtime.time.monotonic", lambda: clock["t"])
+    return controller, clock
+
+
+def test_cpu_change_does_not_trigger_static_frame(monkeypatch):
+    controller, _ = make_controller(monkeypatch)
+    first = controller.update(state())
+    assert first is not None
+    controller.mark_uploaded(state())
+    # CPU is not part of StaticDisplayState at all; nothing to feed it with.
+
+
+def test_minute_change_does_not_trigger_static_frame(monkeypatch):
+    controller, _ = make_controller(monkeypatch)
+    first = controller.update(state())
+    assert first is not None
+    controller.mark_uploaded(state())
+    # No minute_key trigger exists in the static path anymore.
+    assert controller.update(state()) is None  # inside min interval
+
+
+def test_slow_drift_uses_last_committed_baseline(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+
+    displayed = state(memory_percent=50.0)
+    image = controller.update(displayed)
+    assert image is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 31
+    # Threshold 5, judged against displayed 50 (not previous samples):
+    assert controller.update(state(memory_percent=54.0)) is None   # 50 -> 54: <5
+    assert controller.update(state(memory_percent=58.0)) is not None  # 50 -> 58: >=5
+
+
+def test_failed_upload_does_not_commit_baseline(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+
+    displayed = state(memory_percent=50.0)
+    assert controller.update(displayed) is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 31
+    candidate = state(memory_percent=80.0)
+    assert controller.update(candidate) is not None
+    # Upload FAILS -> mark_uploaded never called -> baseline must stay at 50.
+    clock["t"] += 31
+    # Baseline must still be 50 (failed upload did not commit 80):
+    # 53 would be "no change" if baseline had wrongly advanced to 80.
+    assert controller.update(state(memory_percent=78.0)) is not None
+
+
+def test_force_interval_really_forces(monkeypatch):
+    controller, clock = make_controller(monkeypatch, min_interval=30.0, force_interval=300.0)
+
+    displayed = state()
+    assert controller.update(displayed) is not None
+    controller.mark_uploaded(displayed)
+
+    clock["t"] += 100
+    # Identical data inside force window -> nothing.
+    assert controller.update(state()) is None
+
+    clock["t"] += 210  # total 310s >= force_interval
+    # Even with IDENTICAL data, must_force triggers a render.
+    assert controller.update(state()) is not None
+

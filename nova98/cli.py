@@ -113,8 +113,9 @@ def cmd_preview(args) -> int:
 
 def render_current(config: Config):
     from nova98.renderer.renderer import render
+    from nova98.renderer.state import static_display_state
 
-    return render(_sample_metrics(config))
+    return render(static_display_state(_sample_metrics(config)))
 
 
 def cmd_show(args) -> int:

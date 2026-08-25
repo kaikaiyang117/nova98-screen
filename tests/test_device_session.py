@@ -35,25 +35,27 @@ def test_device_session_requires_connect():
 
 
 def test_static_controller_respects_min_interval(monkeypatch):
+    from nova98.renderer.state import StaticDisplayState
+
     controller = StaticFrameController(Config())
     clock = {"t": 1000.0}
     monkeypatch.setattr("nova98.scheduler.runtime.time.monotonic", lambda: clock["t"])
 
-    def metrics(cpu):
-        return SystemMetrics(cpu_percent=cpu, timestamp=datetime(2026, 1, 1, 12, 0, 0))
+    def state(ram):
+        return StaticDisplayState(memory_percent=ram)
 
-    first = controller.update(metrics(50))
+    first = controller.update(state(50))
     assert first is not None  # forced initial render
-    controller.mark_uploaded(first)
+    controller.mark_uploaded(state(50))
 
     # Inside min interval: nothing.
-    assert controller.update(metrics(90)) is None
+    assert controller.update(state(90)) is None
 
     clock["t"] += 31
-    # Outside interval but below change threshold (10): no update.
-    assert controller.update(metrics(55)) is None
-    # Big jump: renders again.
-    assert controller.update(metrics(90)) is not None
+    # Outside interval but below change threshold (5): no update.
+    assert controller.update(state(53)) is None
+    # Big jump vs committed 50: renders again.
+    assert controller.update(state(90)) is not None
 
 
 def test_telemetry_controller_skips_and_sends():
