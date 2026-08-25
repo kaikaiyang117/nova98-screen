@@ -1,9 +1,12 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nova98-screen"
 version = "0.1.0"
 description = "AULA NOVA98 keyboard TFT system monitor"
-requires-python = ">=3.11"
-dependencies = [
+requires-python = ">=3.11"dependencies = [
     "hidapi",
     "Pillow",
     "psutil",
@@ -23,3 +26,6 @@ markers = [
     "hardware: tests that require the physical NOVA98 device (deselect with '-m \"not hardware\"')",
 ]
 addopts = "-m 'not hardware'"
+
+[tool.setuptools.packages.find]
+include = ["nova98*"]
