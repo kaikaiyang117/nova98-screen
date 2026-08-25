@@ -20,6 +20,8 @@ thresholds:
 
   temperature: 3
 
+# Experimental only.
+# NOVA98 acknowledges cmd 52 but does not render telemetry.
 telemetry:
 
   enabled: false

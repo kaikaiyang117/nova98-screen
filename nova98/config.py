@@ -21,7 +21,8 @@ class MetricsConfig:
     cpu: bool = True
     memory: bool = True
     temperature: bool = True
-    gpu: bool = True
+    # No on-screen consumer for GPU while native telemetry is unavailable.
+    gpu: bool = False
     network: bool = True
 
 
@@ -34,6 +35,8 @@ class ThresholdsConfig:
 
 @dataclass
 class TelemetryConfig:
+    # Default OFF: NOVA98 firmware ACKs cmd 52 but renders nothing
+    # (docs/native-telemetry.md). Keep for future firmware / other models.
     enabled: bool = False
     interval: float = 1.0
     force_interval: float = 5.0
