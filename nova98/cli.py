@@ -143,6 +143,7 @@ def cmd_run(args) -> int:
 
     last_connect_attempt = 0.0
     last_sample = 0.0
+    last_stats_log = time.monotonic()
     try:
         while True:
             now = time.monotonic()
@@ -157,6 +158,14 @@ def cmd_run(args) -> int:
             if now - last_sample >= max(0.25, config.telemetry.interval * 0.9):
                 last_sample = now
                 runtime.tick(service.read())
+
+            # Flash-write observability: periodic summary.
+            if now - last_stats_log >= 600.0:
+                last_stats_log = now
+                logger.info(
+                    "Static upload stats: %s",
+                    runtime.static.stats.summary(),
+                )
             time.sleep(0.1)
     except KeyboardInterrupt:
         logger.info("Stopped by user")
