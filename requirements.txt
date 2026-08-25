@@ -1,4 +1,5 @@
 hidapi
+numpy
 Pillow
 psutil
 pyyaml

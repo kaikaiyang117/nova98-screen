@@ -9,6 +9,7 @@ description = "AULA NOVA98 keyboard TFT system monitor"
 requires-python = ">=3.11"
 dependencies = [
     "hidapi",
+    "numpy",
     "Pillow",
     "psutil",
     "pyyaml",
