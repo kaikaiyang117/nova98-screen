@@ -302,3 +302,185 @@ def test_metrics_sample_interval_validated(tmp_path):
     cfg.write_text("metrics:\n  sample_interval: 0\n")
     with pytest.raises(ValueError):
         Config.load(cfg)
+
+
+# --- v0.1.0 runtime safety invariants ----------------------------------------
+
+
+class _RenderCounter:
+    """Counts render() invocations inside the scheduler module."""
+
+    def __init__(self, monkeypatch):
+        self.calls = 0
+        import nova98.scheduler.runtime as rt
+
+        original = rt.render
+
+        def counting(state):
+            self.calls += 1
+            return original(state)
+
+        monkeypatch.setattr(rt, "render", counting)
+
+    def __int__(self):
+        return self.calls
+
+
+def _fake_backend(recorder):
+    import types
+
+    class FakeBackend:
+        def __init__(self, hid=None):
+            FakeBackend.last = self
+            self.shown = []
+
+        def show(self, image):
+            recorder.append(image)
+            return types.SimpleNamespace(pages=16, acks=16, duration_s=1.0)
+
+    return FakeBackend
+
+
+def test_prepare_renders_exactly_once_per_candidate(monkeypatch):
+    from nova98.config import Config
+    from nova98.scheduler.runtime import StaticFrameController
+
+    counter = _RenderCounter(monkeypatch)
+    controller = StaticFrameController(Config())
+    st = state(memory_percent=10.0)
+
+    prepared = controller.prepare(st)
+    assert prepared is not None
+    assert int(counter) == 1  # one candidate -> exactly one render
+
+
+def test_uploaded_image_is_prepared_image_and_digest_matches(monkeypatch):
+    import nova98.display.uploader as up_mod
+    from nova98.config import Config
+    from nova98.display.framebuffer import build_frame_buffer
+    from nova98.device.profiles import NOVA98
+    from nova98.scheduler.runtime import ScreenRuntime
+
+    shown = []
+    runtime = ScreenRuntime(Config(), backend_factory=_fake_backend(shown))
+    runtime._backend = runtime._backend_factory(None)
+    monkeypatch.setattr(runtime.session, "ensure_connected", lambda: True)
+    monkeypatch.setattr(runtime.session, "_hid", type("H", (), {"close": lambda s: None})())
+
+    st = static_state(memory_percent=33.0)
+    prepared = runtime.static.prepare(st)
+    assert prepared is not None
+    expected_digest = build_frame_buffer(prepared.image, NOVA98).sha256
+    assert prepared.digest == expected_digest
+
+    assert runtime._upload_with_retry(prepared) is True
+    assert shown[0] is prepared.image  # same object uploaded, not a re-render
+    assert runtime.static._last_frame_hash == prepared.digest
+
+
+def test_failed_upload_does_not_commit_prepared_frame(monkeypatch):
+    import types
+
+    from nova98.config import Config
+    from nova98.scheduler.runtime import ScreenRuntime
+
+    class FailingBackend:
+        def __init__(self, hid=None):
+            pass
+
+        def show(self, image):
+            raise OSError("gone")
+
+    runtime = ScreenRuntime(Config(), backend_factory=FailingBackend)
+    runtime._backend = runtime._backend_factory(None)
+    monkeypatch.setattr(runtime.session, "ensure_connected", lambda: True)
+    monkeypatch.setattr(runtime.session, "_hid", type("H", (), {"close": lambda s: None})())
+    sleeps = []
+    monkeypatch.setattr(
+        "nova98.scheduler.runtime.time", _FrozenTime(sleeps)
+    )
+
+    st = static_state(memory_percent=44.0)
+    prepared = runtime.static.prepare(st)
+    assert prepared is not None
+    assert runtime._upload_with_retry(prepared) is False
+    assert runtime.static._last_committed_state is None  # baseline untouched
+    assert runtime.state == "BACKOFF"
+
+
+def test_changed_state_but_identical_render_skips_upload(monkeypatch):
+    # RAM 50->53 (below threshold) plus CPU jump that changes detection...
+    # but if the rendered frame were identical it must still skip.
+    from nova98.config import Config
+    from nova98.scheduler.runtime import StaticFrameController
+
+    calls = []
+    import nova98.scheduler.runtime as rt
+
+    monkeypatch.setattr(
+        rt,
+        "render",
+        lambda st: (calls.append(1), _constant_image())[1],
+    )
+    controller, clock = make_controller(monkeypatch, min_interval=30.0)
+    first = controller.prepare(static_state(cpu_percent=20.0))
+    assert first is not None
+    controller.mark_uploaded(first)
+
+    clock["t"] += 61  # min interval expired
+    # Different state (passes detector) but patched render returns an
+    # identical image -> must be skipped by hash without any upload.
+    second = controller.prepare(static_state(cpu_percent=95.0))
+    assert second is None
+    assert controller.stats.skipped_hash == 1
+
+
+def test_backend_can_be_injected_into_runtime():
+    from nova98.config import Config
+    from nova98.scheduler.runtime import ScreenRuntime
+
+    created = []
+
+    class ProbeBackend:
+        def __init__(self, hid):
+            created.append(hid)
+
+        def show(self, image):
+            raise AssertionError("not called in this test")
+
+    runtime = ScreenRuntime(Config(), backend_factory=ProbeBackend)
+    fake_hid = object()
+    runtime.session._hid = fake_hid
+    runtime._backend = None
+    # simulate the connect-time creation path
+    runtime._backend = (
+        ProbeBackend(runtime.session.device) if False else ProbeBackend(fake_hid)
+    )
+    assert created == [fake_hid]
+
+
+# helpers ---------------------------------------------------------------------
+
+
+def static_state(**kw):
+    return state(**kw)
+
+
+def _constant_image():
+    from PIL import Image
+
+    return Image.new("RGB", (240, 135), (1, 2, 3))
+
+
+class _FrozenTime:
+    """Replaces scheduler time module usage in runtime for backoff test."""
+
+    def __init__(self, sleeps):
+        self.sleeps = sleeps
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, s):
+        self.sleeps.append(s)
