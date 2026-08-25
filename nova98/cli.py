@@ -3,11 +3,11 @@
 Commands:
     devices         list detected NOVA98 HID interfaces
     metrics         print current system metrics once
-    telemetry       print the native telemetry values that would be sent
+    telemetry       print experimental cmd 52 values (not rendered by NOVA98)
     preview         render dashboard to preview.png
     show            upload one static dashboard frame
     telemetry-test  send one cmd 52 telemetry status (single shot)
-    run             dual-channel background runtime (fast + slow path)
+    run             background monitoring runtime
 """
 
 from __future__ import annotations
@@ -135,9 +135,9 @@ def cmd_run(args) -> int:
     runtime = ScreenRuntime(config)
     service = MetricsService(config.metrics)
     logger.info(
-        "Starting dual-channel runtime (telemetry %.1fs / static min %.0fs)",
-        config.telemetry.interval,
+        "Starting runtime (static min %.0fs, force re-eval %.0fs)",
         config.refresh.min_interval,
+        config.refresh.force_interval,
     )
     service.read()  # prime counters
 
