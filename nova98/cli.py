@@ -133,7 +133,7 @@ def cmd_show(args) -> int:
 def cmd_run(args) -> int:
     config = Config.load(args.config)
     runtime = ScreenRuntime(config)
-    service = MetricsService()
+    service = MetricsService(config.metrics)
     logger.info(
         "Starting dual-channel runtime (telemetry %.1fs / static min %.0fs)",
         config.telemetry.interval,
@@ -205,9 +205,11 @@ def main(argv: list[str] | None = None) -> int:
     p_devices.set_defaults(func=cmd_devices)
 
     p_metrics = sub.add_parser("metrics", help="print current system metrics")
+    p_metrics.add_argument("--config", default="config.yaml")
     p_metrics.set_defaults(func=cmd_metrics)
 
     p_tel = sub.add_parser("telemetry", help="show native telemetry values")
+    p_tel.add_argument("--config", default="config.yaml")
     p_tel.set_defaults(func=cmd_telemetry)
 
     p_preview = sub.add_parser("preview", help="render dashboard to preview.png")
