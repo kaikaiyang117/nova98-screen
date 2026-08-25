@@ -1,4 +1,5 @@
-"""Dual-channel screen runtime: fast telemetry path + slow static frame path."""
+"""Screen runtime with an active static framebuffer channel and an optional
+experimental telemetry channel (disabled by default on NOVA98)."""
 
 from __future__ import annotations
 
@@ -69,7 +70,12 @@ class DeviceSession:
 
 
 class TelemetryController:
-    """FAST PATH: CPU/GPU/temp via cmd 52, ~1Hz, no framebuffer writes."""
+    """Experimental cmd 52 channel.
+
+    Protocol is valid (55 34 ACK), but NOVA98 firmware currently does not
+    render the supplied values. Disabled by default; retained for future
+    firmware and other AULA models.
+    """
 
     def __init__(self, scheduler):
         self.scheduler = scheduler
@@ -206,7 +212,7 @@ class ScreenRuntime:
         return self._state
 
     def tick(self, metrics: SystemMetrics) -> bool:
-        """Run both display channels once. Returns True if a frame was uploaded."""
+        """Run the active display channel(s) once. True if a frame was uploaded."""
         if self._state == "BACKOFF":
             if time.monotonic() < self._backoff_until:
                 return False
@@ -219,7 +225,7 @@ class ScreenRuntime:
         if self.telemetry.enabled:
             self.telemetry.bind(self.session.device)
 
-        # FAST PATH first: cheap, frequent.
+        # Experimental telemetry first: cheap no-op unless enabled.
         uploaded = False
         try:
             self.telemetry.update(metrics_to_telemetry(metrics))
@@ -230,7 +236,7 @@ class ScreenRuntime:
             self._state = "DISCONNECTED"
             return False
 
-        # SLOW PATH: expensive framebuffer upload, static data only.
+        # Active display path: throttled framebuffer upload.
         try:
             state = static_display_state(metrics)
             image = self.static.update(state)

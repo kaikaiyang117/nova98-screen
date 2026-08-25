@@ -1,4 +1,4 @@
-"""Telemetry scheduler: fast-path decision for cmd 52 updates.
+"""Scheduler for the experimental cmd 52 telemetry channel.
 
 Semantics:
 - should_send() is a PURE decision; it never mutates state.

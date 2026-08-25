@@ -1,8 +1,9 @@
 """Static change detection: compares against the LAST COMMITTED (displayed)
 state, not the previous sample, so slow drift still triggers an update.
 
-Dynamic metrics (CPU/GPU/temp) are NOT detected here — they belong to
-TelemetryScheduler on the native telemetry channel.
+Detects every field rendered by the static framebuffer channel:
+CPU usage, CPU temperature, RAM and network rate tiers.
+(GPU fields have no data source enabled by default.)
 """
 
 from __future__ import annotations
