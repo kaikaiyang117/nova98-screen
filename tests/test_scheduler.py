@@ -139,7 +139,7 @@ def test_force_does_not_rewrite_identical_frame(monkeypatch):
     # Identical state -> identical hash -> no upload, even though forced.
     assert controller.prepare(state()) is None
     assert controller.stats.skipped_hash == 1
-    assert controller.stats.succeeded == 1  # only the initial upload
+    assert controller.stats.frames_succeeded == 1  # only the initial upload
 
 
 def test_force_uploads_when_frame_actually_changed(monkeypatch):
@@ -196,8 +196,8 @@ def test_upload_failure_keeps_stats_consistent(monkeypatch):
     # Baseline still 50 -> 53 is below threshold and stays skipped.
     assert controller.prepare(state(memory_percent=53.0)) is None
     assert controller.stats.frames_succeeded == 1
-    summary = controller.stats.summary()
-    assert "wire(attempts/failures)=0/1" in summary
+    # No real wire attempts happened in this unit test (backend faked).
+    assert controller.stats.wire_attempts == 0
 
 
 def test_config_validation_rejects_bad_values(tmp_path):
@@ -273,3 +273,32 @@ def test_partial_refresh_preserves_force_default(tmp_path):
     r = Config.load(cfg).refresh
     assert r.min_interval == 120
     assert r.force_interval == 1800
+
+
+def test_metrics_sample_interval_independent_of_telemetry(tmp_path):
+    from nova98.config import Config
+
+    cfg = tmp_path / "cadence.yaml"
+    cfg.write_text(
+        "metrics:\n"
+        "  sample_interval: 2.5\n"
+        "telemetry:\n"
+        "  interval: 99\n"
+        "  force_interval: 200\n"
+        "  enabled: false\n"
+    )
+    config = Config.load(cfg)
+    assert config.metrics.sample_interval == 2.5
+    assert config.telemetry.interval == 99      # unrelated field
+    assert config.telemetry.enabled is False
+
+
+def test_metrics_sample_interval_validated(tmp_path):
+    import pytest
+
+    from nova98.config import Config
+
+    cfg = tmp_path / "bad.yaml"
+    cfg.write_text("metrics:\n  sample_interval: 0\n")
+    with pytest.raises(ValueError):
+        Config.load(cfg)

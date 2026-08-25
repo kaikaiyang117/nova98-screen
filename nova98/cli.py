@@ -141,8 +141,10 @@ def cmd_run(args) -> int:
     )
     service.read()  # prime counters
 
+    sample_interval = config.metrics.sample_interval
+    logger.info("Metrics sampling every %.1fs", sample_interval)
     last_connect_attempt = 0.0
-    last_sample = 0.0
+    next_sample = time.monotonic()
     last_stats_log = time.monotonic()
     try:
         while True:
@@ -155,9 +157,9 @@ def cmd_run(args) -> int:
                 time.sleep(0.5)
                 continue
 
-            if now - last_sample >= max(0.25, config.telemetry.interval * 0.9):
-                last_sample = now
+            if now >= next_sample:
                 runtime.tick(service.read())
+                next_sample = max(now, next_sample + sample_interval)
 
             # Flash-write observability: periodic summary.
             if now - last_stats_log >= 600.0:

@@ -24,6 +24,8 @@ class MetricsConfig:
     # No on-screen consumer for GPU while native telemetry is unavailable.
     gpu: bool = False
     network: bool = True
+    # Independent of telemetry cadence: how often SystemMetrics is sampled.
+    sample_interval: float = 1.0
 
 
 @dataclass
@@ -92,6 +94,9 @@ class Config:
             temperature=bool(metrics_raw.get("temperature", d.metrics.temperature)),
             gpu=bool(metrics_raw.get("gpu", d.metrics.gpu)),
             network=bool(metrics_raw.get("network", d.metrics.network)),
+            sample_interval=float(
+                metrics_raw.get("sample_interval", d.metrics.sample_interval)
+            ),
         )
         thresholds = raw.get("thresholds") or {}
         config.thresholds = ThresholdsConfig(
@@ -117,6 +122,11 @@ class Config:
 
     def validate(self) -> None:
         """Reject invalid configurations instead of failing mid-run."""
+        m = self.metrics
+        if m.sample_interval <= 0:
+            raise ValueError(
+                f"metrics.sample_interval must be > 0, got {m.sample_interval}"
+            )
         r = self.refresh
         if r.min_interval <= 0:
             raise ValueError(f"refresh.min_interval must be > 0, got {r.min_interval}")

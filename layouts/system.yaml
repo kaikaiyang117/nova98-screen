@@ -6,6 +6,8 @@ display:
 
 metrics:
 
+  sample_interval: 1.0
+
   cpu: true
   memory: true
   temperature: true
