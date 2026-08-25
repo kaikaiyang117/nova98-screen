@@ -198,10 +198,18 @@ class StaticFrameController:
 class ScreenRuntime:
     states = ("CONNECTED", "DISCONNECTED", "RECONNECTING", "BACKOFF")
 
-    def __init__(self, config: Config, telemetry_scheduler=None):
+    def __init__(self, config: Config, telemetry_scheduler=None,
+                 backend_factory=None):
         self.config = config
         self.session = DeviceSession()
         self.static = StaticFrameController(config)
+        # Injectable so tests (or a future volatile backend) can swap the
+        # display transport without touching scheduler logic.
+        if backend_factory is None:
+            from nova98.display.backend import FlashFramebufferBackend
+
+            backend_factory = FlashFramebufferBackend
+        self._backend_factory = backend_factory
         # Experimental channel is not initialized at all when disabled.
         self.telemetry: TelemetryController | None = (
             TelemetryController(
@@ -238,9 +246,7 @@ class ScreenRuntime:
         self._state = "CONNECTED"
         # Backend lives as long as the current HID session.
         if self._backend is None:
-            from nova98.display.backend import FlashFramebufferBackend
-
-            self._backend = FlashFramebufferBackend(self.session.device)
+            self._backend = self._backend_factory(self.session.device)
 
         # Experimental telemetry first: skipped entirely when disabled.
         uploaded = False

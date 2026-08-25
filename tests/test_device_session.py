@@ -187,7 +187,14 @@ def test_backoff_closes_and_reopens_hid(monkeypatch):
 def test_backoff_exits_via_reconnect(monkeypatch):
     import types
 
-    runtime = ScreenRuntime(Config())
+    class FakeBackend:
+        def __init__(self, hid):
+            self.hid = hid
+
+        def show(self, image):
+            return types.SimpleNamespace(pages=16, acks=16, duration_s=1.0)
+
+    runtime = ScreenRuntime(Config(), backend_factory=FakeBackend)
     assert runtime.telemetry is None  # disabled by default: never initialized
 
     class IdleHid:
@@ -195,17 +202,6 @@ def test_backoff_exits_via_reconnect(monkeypatch):
             pass
 
     monkeypatch.setattr(runtime.session, "_hid", IdleHid())
-
-    import nova98.display.backend as backend_mod
-
-    class SuccessBackend:
-        def __init__(self, hid):
-            pass
-
-        def show(self, image):
-            return types.SimpleNamespace(pages=16, acks=16, duration_s=1.0)
-
-    monkeypatch.setattr(backend_mod, "FlashFramebufferBackend", SuccessBackend)
 
     class SuccessBackendUnused:
         def show(self, image):
