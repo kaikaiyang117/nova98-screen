@@ -12,6 +12,7 @@ from nova98.config import Config
 from nova98.device.hid_device import HidError, Nova98Hid
 from nova98.device.profiles import NOVA98
 from nova98.display.framebuffer import build_frame_buffer
+from nova98.display.prepared import PreparedFrame
 from nova98.metrics.base import SystemMetrics
 from nova98.renderer.renderer import render
 from nova98.renderer.state import StaticDisplayState, static_display_state
@@ -134,7 +135,12 @@ class StaticFrameController:
         self._pending_reason = "manual"
         self.stats = StaticUploadStats()
 
-    def update(self, state: StaticDisplayState) -> Image.Image | None:
+    def prepare(self, state: StaticDisplayState) -> PreparedFrame | None:
+        """Evaluate a refresh candidate. Renders at most once per call.
+
+        The returned PreparedFrame is the single source for hashing,
+        uploading and committing — no re-render ever happens downstream.
+        """
         forced = self.limiter.must_force()
         if not forced and not self.limiter.allow():
             logger.debug("Static frame skipped: min interval not reached")
@@ -147,6 +153,7 @@ class StaticFrameController:
             self.stats.skipped_unchanged += 1
             return None
 
+        # Exactly one render per candidate.
         image = render(state)
         digest = build_frame_buffer(image, NOVA98).sha256
         if digest == self._last_frame_hash:
@@ -157,18 +164,21 @@ class StaticFrameController:
             logger.info("Static frame skipped: identical framebuffer hash")
             return None
 
-        self.stats.attempted += 1
         self._pending_reason = "forced-evaluation" if forced else "changed"
-        return image
+        return PreparedFrame(
+            state=state,
+            image=image,
+            digest=digest,
+            reason=self._pending_reason,
+        )
 
-    def mark_uploaded(self, state: StaticDisplayState) -> None:
-        """Commit baseline ONLY after a successful upload."""
-        digest = build_frame_buffer(render(state), NOVA98).sha256
-        self._commit(state, digest)
+    def mark_uploaded(self, prepared: PreparedFrame) -> None:
+        """Commit baseline ONLY after a successful upload of THIS prepared frame."""
+        self._commit(prepared.state, prepared.digest)
         self.stats.succeeded += 1
         logger.info(
             "Static frame uploaded: reason=%s total_uploads=%d",
-            self._pending_reason,
+            prepared.reason,
             self.stats.succeeded,
         )
 
@@ -246,9 +256,9 @@ class ScreenRuntime:
         # Active display path: throttled framebuffer upload.
         try:
             state = static_display_state(metrics)
-            image = self.static.update(state)
-            if image is not None:
-                uploaded = self._upload_with_retry(state)
+            prepared = self.static.prepare(state)
+            if prepared is not None:
+                uploaded = self._upload_with_retry(prepared)
         except (HidError, OSError) as exc:
             logger.warning("Static channel error: %s", exc)
             self.session.disconnect()
@@ -257,13 +267,13 @@ class ScreenRuntime:
             self._state = "DISCONNECTED"
         return uploaded
 
-    def _upload_with_retry(self, state: StaticDisplayState) -> bool:
+    def _upload_with_retry(self, prepared: PreparedFrame) -> bool:
         from nova98.display.uploader import SafetyError
 
         for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
             try:
-                self._backend.show(render(state))
-                self.static.mark_uploaded(state)
+                self._backend.show(prepared.image)
+                self.static.mark_uploaded(prepared)
                 logger.info("Upload attempt %d ok", attempt)
                 return True
             except SafetyError:

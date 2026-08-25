@@ -17,6 +17,13 @@ from nova98.scheduler.runtime import (
 from nova98.scheduler.telemetry import TelemetryScheduler
 from datetime import datetime
 
+def _commit(controller, st):
+    """prepare + assert + successful upload commit."""
+    prepared = controller.prepare(st)
+    assert prepared is not None
+    controller.mark_uploaded(prepared)
+
+
 
 class FakeSession:
     def __init__(self):
@@ -44,18 +51,18 @@ def test_static_controller_respects_min_interval(monkeypatch):
     def state(ram):
         return StaticDisplayState(memory_percent=ram)
 
-    first = controller.update(state(50))
+    first = controller.prepare(state(50))
     assert first is not None  # forced initial render
-    controller.mark_uploaded(state(50))
+    _commit(controller, state(50))
 
     # Inside min interval: nothing.
-    assert controller.update(state(90)) is None
+    assert controller.prepare(state(90)) is None
 
     clock["t"] += 61
     # Outside interval but below change threshold (5): no update.
-    assert controller.update(state(53)) is None
+    assert controller.prepare(state(53)) is None
     # Big jump vs committed 50: renders again.
-    assert controller.update(state(90)) is not None
+    assert controller.prepare(state(90)) is not None
 
 
 def test_telemetry_controller_skips_and_sends():
@@ -159,11 +166,22 @@ def test_backoff_closes_and_reopens_hid(monkeypatch):
     from nova98.renderer.state import StaticDisplayState
     from datetime import datetime
 
+    from nova98.display.prepared import PreparedFrame
+    from nova98.renderer.renderer import render as _render
+
     st = StaticDisplayState(memory_percent=10.0)
-    assert runtime._upload_with_retry(st) is False
+    image = _render(st)
+    prepared = PreparedFrame(
+        state=st,
+        image=image,
+        digest="deadbeef",
+        reason="changed",
+    )
+    assert runtime._upload_with_retry(prepared) is False
 
     assert runtime.state == "BACKOFF"
     assert not runtime.session.connected  # handle released, will re-enumerate
+    assert runtime.static.stats.failed >= 1
 
 
 def test_backoff_exits_via_reconnect(monkeypatch):

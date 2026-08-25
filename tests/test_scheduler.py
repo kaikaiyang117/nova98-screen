@@ -8,6 +8,13 @@ from nova98.config import Config
 from nova98.renderer.state import StaticDisplayState
 from nova98.scheduler.change_detector import StaticChangeDetector, StaticThresholds
 
+def _commit(controller, st):
+    """prepare + assert + successful upload commit."""
+    prepared = controller.prepare(st)
+    assert prepared is not None
+    controller.mark_uploaded(prepared)
+
+
 
 def state(**kw) -> StaticDisplayState:
     defaults = dict(
@@ -72,52 +79,52 @@ def test_cpu_change_triggers_static_frame_after_interval(monkeypatch):
     # static channel again and must be change-detected.
     controller, clock = make_controller(monkeypatch, min_interval=30.0)
     displayed = state(cpu_percent=50.0)
-    assert controller.update(displayed) is not None
-    controller.mark_uploaded(displayed)
+    assert controller.prepare(displayed) is not None
+    _commit(controller, displayed)
 
     clock["t"] += 31
-    assert controller.update(state(cpu_percent=55.0)) is None   # +5 < threshold 10
-    assert controller.update(state(cpu_percent=65.0)) is not None  # vs committed 50
+    assert controller.prepare(state(cpu_percent=55.0)) is None   # +5 < threshold 10
+    assert controller.prepare(state(cpu_percent=65.0)) is not None  # vs committed 50
 
 
 def test_minute_change_does_not_trigger_static_frame(monkeypatch):
     controller, _ = make_controller(monkeypatch)
-    first = controller.update(state())
+    first = controller.prepare(state())
     assert first is not None
-    controller.mark_uploaded(state())
+    _commit(controller, state())
     # No minute_key trigger exists in the static path anymore.
-    assert controller.update(state()) is None  # inside min interval
+    assert controller.prepare(state()) is None  # inside min interval
 
 
 def test_slow_drift_uses_last_committed_baseline(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0)
 
     displayed = state(memory_percent=50.0)
-    image = controller.update(displayed)
+    image = controller.prepare(displayed)
     assert image is not None
-    controller.mark_uploaded(displayed)
+    _commit(controller, displayed)
 
     clock["t"] += 31
     # Threshold 5, judged against displayed 50 (not previous samples):
-    assert controller.update(state(memory_percent=54.0)) is None   # 50 -> 54: <5
-    assert controller.update(state(memory_percent=58.0)) is not None  # 50 -> 58: >=5
+    assert controller.prepare(state(memory_percent=54.0)) is None   # 50 -> 54: <5
+    assert controller.prepare(state(memory_percent=58.0)) is not None  # 50 -> 58: >=5
 
 
 def test_failed_upload_does_not_commit_baseline(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0)
 
     displayed = state(memory_percent=50.0)
-    assert controller.update(displayed) is not None
-    controller.mark_uploaded(displayed)
+    assert controller.prepare(displayed) is not None
+    _commit(controller, displayed)
 
     clock["t"] += 31
     candidate = state(memory_percent=80.0)
-    assert controller.update(candidate) is not None
+    assert controller.prepare(candidate) is not None
     # Upload FAILS -> mark_uploaded never called -> baseline must stay at 50.
     clock["t"] += 31
     # Baseline must still be 50 (failed upload did not commit 80):
     # 53 would be "no change" if baseline had wrongly advanced to 80.
-    assert controller.update(state(memory_percent=78.0)) is not None
+    assert controller.prepare(state(memory_percent=78.0)) is not None
 
 
 def test_force_does_not_rewrite_identical_frame(monkeypatch):
@@ -125,12 +132,12 @@ def test_force_does_not_rewrite_identical_frame(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0, force_interval=300.0)
 
     displayed = state()
-    assert controller.update(displayed) is not None
-    controller.mark_uploaded(displayed)
+    assert controller.prepare(displayed) is not None
+    _commit(controller, displayed)
 
     clock["t"] += 301  # force interval long expired
     # Identical state -> identical hash -> no upload, even though forced.
-    assert controller.update(state()) is None
+    assert controller.prepare(state()) is None
     assert controller.stats.skipped_hash == 1
     assert controller.stats.succeeded == 1  # only the initial upload
 
@@ -139,14 +146,14 @@ def test_force_uploads_when_frame_actually_changed(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0, force_interval=300.0)
 
     displayed = state(memory_percent=50.0)
-    assert controller.update(displayed) is not None
-    controller.mark_uploaded(displayed)
+    assert controller.prepare(displayed) is not None
+    _commit(controller, displayed)
 
     clock["t"] += 331  # min + force both expired
     candidate = state(memory_percent=53.0)
-    result = controller.update(candidate)
+    result = controller.prepare(candidate)
     assert result is not None
-    controller.mark_uploaded(candidate)
+    _commit(controller, candidate)
     assert controller._last_committed_state.memory_percent == 53.0
 
 
@@ -154,42 +161,41 @@ def test_force_uploads_when_frame_actually_changed(monkeypatch):
 def test_temperature_slow_drift_accumulates(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0)
     displayed = state(cpu_temperature=50.0)
-    assert controller.update(displayed) is not None
-    controller.mark_uploaded(displayed)
+    assert controller.prepare(displayed) is not None
+    _commit(controller, displayed)
 
     clock["t"] += 31
     # threshold 3, judged against displayed 50 (not the previous sample):
-    assert controller.update(state(cpu_temperature=52.0)) is None   # +2 < 3
-    assert controller.update(state(cpu_temperature=54.0)) is not None  # +4 >= 3
+    assert controller.prepare(state(cpu_temperature=52.0)) is None   # +2 < 3
+    assert controller.prepare(state(cpu_temperature=54.0)) is not None  # +4 >= 3
 
 
 def test_network_tier_judged_against_committed_state(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0)
     committed = state(download_bytes_per_sec=100_000.0)  # tier 0
-    assert controller.update(committed) is not None
-    controller.mark_uploaded(committed)
+    assert controller.prepare(committed) is not None
+    _commit(controller, committed)
 
     clock["t"] += 31
     # Previous-sample style detection would compare 300k vs 700k (same tier);
     # correct behaviour compares each against committed 100k (tier 0).
-    assert controller.update(state(download_bytes_per_sec=700_000.0)) is not None  # tier 1
+    assert controller.prepare(state(download_bytes_per_sec=700_000.0)) is not None  # tier 1
 
 
 def test_upload_failure_keeps_stats_consistent(monkeypatch):
     controller, clock = make_controller(monkeypatch, min_interval=30.0)
     displayed = state(memory_percent=50.0)
-    assert controller.update(displayed) is not None
-    controller.mark_uploaded(displayed)
+    assert controller.prepare(displayed) is not None
+    _commit(controller, displayed)
 
     clock["t"] += 31
     candidate = state(memory_percent=90.0)
-    assert controller.update(candidate) is not None
-    assert controller.stats.attempted == 2
+    assert controller.prepare(candidate) is not None
     # Simulate failure: no mark_uploaded call.
     controller.mark_failed()
     clock["t"] += 31
     # Baseline still 50 -> 53 is below threshold and stays skipped.
-    assert controller.update(state(memory_percent=53.0)) is None
+    assert controller.prepare(state(memory_percent=53.0)) is None
     summary = controller.stats.summary()
     assert "uploads=1" in summary and "failed=1" in summary
 
