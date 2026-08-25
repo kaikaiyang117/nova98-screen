@@ -192,3 +192,33 @@ def test_upload_failure_keeps_stats_consistent(monkeypatch):
     assert controller.update(state(memory_percent=53.0)) is None
     summary = controller.stats.summary()
     assert "uploads=1" in summary and "failed=1" in summary
+
+
+def test_config_validation_rejects_bad_values(tmp_path):
+    import pytest
+
+    from nova98.config import Config
+
+    cases = [
+        "display:\n  refresh:\n    min_interval: -1\n",
+        "display:\n  refresh:\n    min_interval: 300\n    force_interval: 60\n",
+        "telemetry:\n  interval: 0\n",
+        "telemetry:\n  interval: 5\n  force_interval: 1\n",
+        "thresholds:\n  cpu: -5\n",
+    ]
+    for i, content in enumerate(cases):
+        cfg = tmp_path / f"bad{i}.yaml"
+        cfg.write_text(content)
+        with pytest.raises(ValueError):
+            Config.load(cfg)
+
+
+def test_config_validation_accepts_valid_file(tmp_path):
+    from nova98.config import Config
+
+    cfg = tmp_path / "ok.yaml"
+    cfg.write_text(
+        "display:\n  refresh:\n    min_interval: 60\n    force_interval: 1800\n"
+    )
+    config = Config.load(cfg)  # must not raise
+    assert config.refresh.min_interval == 60

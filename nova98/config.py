@@ -107,4 +107,34 @@ class Config:
         )
         layout = raw.get("layout") or {}
         config.layout = LayoutConfig(name=str(layout.get("name", "system")))
+        config.validate()
         return config
+
+    def validate(self) -> None:
+        """Reject invalid configurations instead of failing mid-run."""
+        r = self.refresh
+        if r.min_interval <= 0:
+            raise ValueError(f"refresh.min_interval must be > 0, got {r.min_interval}")
+        if r.force_interval < r.min_interval:
+            raise ValueError(
+                f"refresh.force_interval ({r.force_interval}) must be >= "
+                f"min_interval ({r.min_interval})"
+            )
+        t = self.telemetry
+        if t.interval <= 0:
+            raise ValueError(f"telemetry.interval must be > 0, got {t.interval}")
+        if t.force_interval < t.interval:
+            raise ValueError(
+                f"telemetry.force_interval ({t.force_interval}) must be >= "
+                f"interval ({t.interval})"
+            )
+        for name, value in (
+            ("thresholds.cpu", self.thresholds.cpu),
+            ("thresholds.memory", self.thresholds.memory),
+            ("thresholds.temperature", self.thresholds.temperature),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        for name, delta in t.thresholds.items():
+            if delta < 0:
+                raise ValueError(f"telemetry.thresholds.{name} must be >= 0, got {delta}")
