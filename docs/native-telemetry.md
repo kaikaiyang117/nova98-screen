@@ -15,6 +15,11 @@
    `setTftScreenInfo`(cmd 52 系统状态) 没有任何 UI 调用方——
    它是 SDK 中给其他产品线预留的死代码。
 
+补充（volatile 通道研究后修正）：cmd 52 并非完全死代码——官方 HUB 在
+屏幕编辑页有手动「同步时间」按钮，走 cmd 52 时钟变体（5A 01 5A 布局）。
+系统状态变体（CPU/温度）仍是无调用死代码。详见
+`docs/volatile-display-research.md`。
+
 工程决定：
 - 遥测通道保留完整实现（协议正确、未来固件/其他型号可用），
   配置默认 `telemetry.enabled: false`。

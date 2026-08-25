@@ -173,6 +173,29 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_time_sync(args) -> int:
+    """Official AULA HUB clock-sync (cmd 52 clock variant, pke layout)."""
+    import datetime as dt_mod
+
+    from nova98.device.clock import encode_clock_payload
+
+    now = dt_mod.datetime.now()
+    payload = encode_clock_payload(now)
+    print(f"Clock sync payload: {payload.hex(' ')}")
+    if args.dry_run:
+        print("dry-run: not sent to device.")
+        return 0
+
+    try:
+        with Nova98Hid(NOVA98) as dev:
+            dev.send_temporary_data(payload)
+    except (OSError, ValueError) as exc:
+        print(f"FAILED: {exc}")
+        return 2
+    print(f"Time synced to {now:%Y-%m-%d %H:%M:%S} (weekday index {payload[9]})")
+    return 0
+
+
 def cmd_telemetry_test(args) -> int:
     status = TelemetryStatus(
         cpu_usage=args.cpu,
@@ -250,6 +273,13 @@ def main(argv: list[str] | None = None) -> int:
         p_ttest.add_argument(name, type=int, default=None)
     p_ttest.add_argument("--dry-run", action="store_true", help="encode and print only")
     p_ttest.set_defaults(func=cmd_telemetry_test)
+
+    p_clock = sub.add_parser(
+        "time-sync",
+        help="sync keyboard clock via cmd 52 (official HUB timeCheck equivalent)",
+    )
+    p_clock.add_argument("--dry-run", action="store_true", help="print payload only")
+    p_clock.set_defaults(func=cmd_time_sync)
 
     args = parser.parse_args(argv)
     setup_logging(args.debug)
